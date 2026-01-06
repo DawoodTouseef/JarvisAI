@@ -1,0 +1,372 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Rajdhani:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* JARVIS Color Palette */
+    --background: 220 30% 5%;
+    --foreground: 190 100% 90%;
+
+    --card: 220 40% 8%;
+    --card-foreground: 190 100% 90%;
+
+    --popover: 220 40% 8%;
+    --popover-foreground: 190 100% 90%;
+
+    --primary: 185 100% 50%;
+    --primary-foreground: 220 30% 5%;
+
+    --secondary: 210 100% 60%;
+    --secondary-foreground: 220 30% 5%;
+
+    --muted: 220 30% 15%;
+    --muted-foreground: 190 50% 60%;
+
+    --accent: 30 100% 55%;
+    --accent-foreground: 220 30% 5%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 190 100% 30%;
+    --input: 220 30% 12%;
+    --ring: 185 100% 50%;
+
+    --radius: 0.75rem;
+
+    /* Custom JARVIS tokens */
+    --jarvis-cyan: 185 100% 50%;
+    --jarvis-blue: 210 100% 60%;
+    --jarvis-orange: 30 100% 55%;
+    --jarvis-glow: 185 100% 50%;
+    --jarvis-dark: 220 30% 3%;
+    --jarvis-panel: 220 40% 8%;
+    --jarvis-green: 85 44% 54%;
+
+    /* Gradients */
+    --gradient-jarvis: linear-gradient(135deg, hsl(185 100% 50% / 0.2), hsl(210 100% 60% / 0.1));
+    --gradient-glow: radial-gradient(circle, hsl(185 100% 50% / 0.3) 0%, transparent 70%);
+    --gradient-panel: linear-gradient(180deg, hsl(220 40% 10% / 0.8) 0%, hsl(220 30% 5% / 0.95) 100%);
+
+    /* Shadows */
+    --shadow-glow: 0 0 30px hsl(185 100% 50% / 0.4);
+    --shadow-glow-sm: 0 0 15px hsl(185 100% 50% / 0.3);
+    --shadow-glow-lg: 0 0 60px hsl(185 100% 50% / 0.5);
+
+    --sidebar-background: 220 30% 5%;
+    --sidebar-foreground: 190 100% 90%;
+    --sidebar-primary: 185 100% 50%;
+    --sidebar-primary-foreground: 220 30% 5%;
+    --sidebar-accent: 220 30% 12%;
+    --sidebar-accent-foreground: 190 100% 90%;
+    --sidebar-border: 190 100% 30%;
+    --sidebar-ring: 185 100% 50%;
+  }
+
+  .dark {
+    --background: 220 30% 5%;
+    --foreground: 190 100% 90%;
+    --card: 220 40% 8%;
+    --card-foreground: 190 100% 90%;
+    --popover: 220 40% 8%;
+    --popover-foreground: 190 100% 90%;
+    --primary: 185 100% 50%;
+    --primary-foreground: 220 30% 5%;
+    --secondary: 210 100% 60%;
+    --secondary-foreground: 220 30% 5%;
+    --muted: 220 30% 15%;
+    --muted-foreground: 190 50% 60%;
+    --accent: 30 100% 55%;
+    --accent-foreground: 220 30% 5%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 190 100% 30%;
+    --input: 220 30% 12%;
+    --ring: 185 100% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-rajdhani antialiased;
+    background: linear-gradient(135deg, hsl(220 30% 3%) 0%, hsl(220 40% 8%) 50%, hsl(220 30% 3%) 100%);
+    min-height: 100vh;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--jarvis-dark));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--jarvis-cyan) / 0.5);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--jarvis-cyan) / 0.8);
+  }
+}
+
+@layer components {
+  /* Glassmorphism panel */
+  .glass-panel {
+    @apply relative overflow-hidden;
+    background: linear-gradient(
+      135deg,
+      hsl(var(--jarvis-panel) / 0.6) 0%,
+      hsl(var(--jarvis-dark) / 0.8) 100%
+    );
+    backdrop-filter: blur(20px);
+    border: 1px solid hsl(var(--jarvis-cyan) / 0.2);
+    box-shadow: 
+      0 0 30px hsl(var(--jarvis-cyan) / 0.1),
+      inset 0 1px 0 hsl(var(--jarvis-cyan) / 0.1);
+  }
+
+  .glass-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      135deg,
+      hsl(var(--jarvis-cyan) / 0.05) 0%,
+      transparent 50%
+    );
+    pointer-events: none;
+  }
+
+  /* HUD border effect */
+  .hud-border {
+    position: relative;
+  }
+
+  .hud-border::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 1px solid hsl(var(--jarvis-cyan) / 0.3);
+    pointer-events: none;
+  }
+
+  /* Scan line effect */
+  .scan-lines {
+    position: relative;
+  }
+
+  .scan-lines::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      hsl(var(--jarvis-cyan) / 0.03) 2px,
+      hsl(var(--jarvis-cyan) / 0.03) 4px
+    );
+    pointer-events: none;
+  }
+
+  /* Glow text */
+  .glow-text {
+    text-shadow: 
+      0 0 10px hsl(var(--jarvis-cyan) / 0.8),
+      0 0 20px hsl(var(--jarvis-cyan) / 0.5),
+      0 0 40px hsl(var(--jarvis-cyan) / 0.3);
+  }
+
+  .glow-text-orange {
+    text-shadow: 
+      0 0 10px hsl(var(--jarvis-orange) / 0.8),
+      0 0 20px hsl(var(--jarvis-orange) / 0.5),
+      0 0 40px hsl(var(--jarvis-orange) / 0.3);
+  }
+  .glow-text-green {
+    text-shadow: 
+      0 0 10px hsl(var(--jarvis-green) / 0.8),
+      0 0 20px hsl(var(--jarvis-green) / 0.5),
+      0 0 40px hsl(var(--jarvis-green) / 0.3);
+  }
+  /* Hexagon clip path */
+  .hexagon {
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  }
+
+  /* Circular progress ring */
+  .progress-ring {
+    transform: rotate(-90deg);
+  }
+}
+
+@layer utilities {
+  /* Animation utilities */
+  .animate-pulse-glow {
+    animation: pulseGlow 2s ease-in-out infinite;
+  }
+
+  .animate-scan {
+    animation: scanLine 3s linear infinite;
+  }
+
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  .animate-rotate-slow {
+    animation: rotateSlow 60s linear infinite;
+  }
+
+  .animate-spectrum {
+    animation: spectrum 0.5s ease-in-out infinite alternate;
+  }
+
+  .animate-flicker {
+    animation: flicker 4s linear infinite;
+  }
+
+  .animate-border-glow {
+    animation: borderGlow 2s ease-in-out infinite;
+  }
+}
+
+/* Keyframes */
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 0.6;
+    filter: blur(0px);
+  }
+  50% {
+    opacity: 1;
+    filter: blur(2px);
+  }
+}
+
+@keyframes scanLine {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes rotateSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spectrum {
+  0% {
+    transform: scaleY(0.3);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes flicker {
+  0%, 100% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  93% {
+    opacity: 0.8;
+  }
+  94% {
+    opacity: 1;
+  }
+  95% {
+    opacity: 0.9;
+  }
+  96% {
+    opacity: 1;
+  }
+}
+
+@keyframes borderGlow {
+  0%, 100% {
+    border-color: hsl(var(--jarvis-cyan) / 0.3);
+    box-shadow: 0 0 20px hsl(var(--jarvis-cyan) / 0.2);
+  }
+  50% {
+    border-color: hsl(var(--jarvis-cyan) / 0.6);
+    box-shadow: 0 0 40px hsl(var(--jarvis-cyan) / 0.4);
+  }
+}
+
+/* Loading screen */
+@keyframes loadingPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+}
+
+/* Particle effect base */
+.particle {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background: hsl(var(--jarvis-cyan));
+  border-radius: 50%;
+  box-shadow: 0 0 10px hsl(var(--jarvis-cyan) / 0.8);
+}
+
+/* Text shimmer */
+.shimmer-text {
+  background: linear-gradient(90deg, hsl(var(--jarvis-cyan)), hsl(var(--jarvis-blue)), hsl(var(--jarvis-cyan)));
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 3s linear infinite;
+  will-change: background-position;
+}
+
+/* Slightly dimmed wrapper so per-letter fades look crisp */
+.shimmer-wrap {
+  display: inline-block;
+  background: transparent;
+}
+
+/* Per-character highlight on hover for interactivity */
+.shimmer-text:hover {
+  filter: brightness(1.1);
+}
+
+@keyframes shimmer {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 100% 50%; }
+}
