@@ -8,6 +8,7 @@ import Dashboard from "./pages/Dashboard";
 import NotFound from "./pages/NotFound";
 import ServerService from "./pages/ServerService";
 import AuthGuard from "./components/AuthGurad";
+
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -24,12 +25,12 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/services" element={<ServerService />} />
-
-          <Route element={<AuthGuard />}>
+        
+          <Route element={<AuthGuard /> }>
             <Route path="/login" element={<Login />} />
             <Route path="/" element={<Dashboard />} />
           </Route>
-
+        
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>

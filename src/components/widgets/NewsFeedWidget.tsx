@@ -110,7 +110,8 @@ export const NewsFeedWidget = () => {
             exit={{ opacity: 0, y: -10 }}
             className="p-3 rounded-lg bg-jarvis-cyan/5 border border-jarvis-cyan/20 mb-3 cursor-pointer"
           >
-            <div className="flex items-center gap-2 mb-2">
+            <a href={current?.url} target="_blank" rel="noreferrer">
+              <div className="flex items-center gap-2 mb-2">
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/20 text-primary font-orbitron">
                 {current?.category || 'News'}
               </span>
@@ -125,6 +126,7 @@ export const NewsFeedWidget = () => {
                 {current?.timestamp ? formatRelativeTime(current.timestamp) : ''}
               </span>
             </div>
+            </a>
           </motion.div>
         </AnimatePresence>
 

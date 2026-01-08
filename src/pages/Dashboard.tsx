@@ -16,13 +16,21 @@ import { toast } from "sonner";
 import { useTranscriptionStore } from "@/stores/transcription";
 import { QuickAction } from "@/components/widgets/QuickAction";
 import { JarvisInput } from "@/components/ui/JarvisInput";
+import Video from "@/components/Video";
+import { SettingsWindow } from "@/components/SettingsWindow";
+import { Communication } from "@/lib/client_websocket";
 
 const Dashboard = () => {
   const navigate = useNavigate();
   const [time, setTime] = useState(new Date());
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [isSystemTrayOpen, setIsSystemTrayOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [useVideo, setUseVideo] = useState(false); // Default to true
   const [startbutton,setstartbutton] = useState(false)
+  const [city, setCity] = useState('New York'); // Default city
+  
+  const [use24hrFormat, setUse24hrFormat] = useState(false);
 
   const transcription = useTranscriptionStore((state) => state.text);
   const [isclockOpen, setIsClockOpen] = useState(false);
@@ -36,7 +44,61 @@ const Dashboard = () => {
     window.addEventListener("mousemove", handleMouseMove);
     return () => window.removeEventListener("mousemove", handleMouseMove);
   }, [handleMouseMove]);
-
+  const loadSettings = async () => {
+      try {
+        // Send a message to the server to get settings
+        Communication.sendMessage(JSON.stringify({ 
+          type: 'get_settings',
+          request_id: 'load_settings'
+        }));
+        
+        // Set up a temporary listener for the response
+        const off = Communication.onMessage((msg) => {
+          try {
+            const data = JSON.parse(msg);
+            if (data.request_id === 'load_settings' && data.type === 'settings_response') {
+              setUseVideo(data.payload.useVideo || false);
+              setCity(data.payload.city || 'New York'); // Update city from settings
+              setUse24hrFormat(data.payload.use24hrFormat || false); // Update 24-hour format from settings
+              off(); // Remove the listener after receiving the response
+            }
+          } catch (e) {
+            console.error('Error parsing settings response:', e);
+          }
+        });
+      } catch (error) {
+        console.error('Error loading settings:', error);
+        toast.error('Failed to load settings');
+      } finally {
+      }
+    };
+    
+    // Listen for settings updates
+    const handleSettingsUpdate = (msg: string) => {
+      try {
+        const data = JSON.parse(msg);
+        if (data.type === 'settings_response' && data.request_id !== 'load_settings') {
+          // This is an update from the settings panel
+          if (data.payload && data.payload.city !== undefined) {
+            setCity(data.payload.city);
+          }
+          if (data.payload && data.payload.useVideo !== undefined) {
+            setUseVideo(data.payload.useVideo);
+          }
+          if (data.payload && data.payload.use24hrFormat !== undefined) {
+            setUse24hrFormat(data.payload.use24hrFormat);
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing settings update:', e);
+      }
+    };
+    
+    const settingsUpdateListener = Communication.onMessage(handleSettingsUpdate);
+  useEffect(() => {
+    settingsUpdateListener();
+  }, []);
+  
   const handleLogout = async() => {
     
     const res = await fetch('/api/auths/signout', {
@@ -54,21 +116,16 @@ const Dashboard = () => {
     navigate("/login");
     }
   };
-  const formatTime = (date: Date) => {
+  const formatTime = (date: Date, use24hrFormats: boolean) => {
     return date.toLocaleTimeString("en-US", {
-      hour12: true,
+      hour12: use24hrFormats,
       hour: "2-digit",
       minute: "2-digit",
     });
   };
-  const formatDate = (date: Date) => {
-    return date.toLocaleDateString("en-US", {
-      month: "numeric",
-      day: "numeric",
-      year: "numeric",
-      formatMatcher:"basic"
-    });
-  };
+  useEffect(() => {
+    loadSettings();
+  }, []);
   return (
     <div className="min-h-screen relative overflow-hidden">
       <ParticleField />
@@ -97,7 +154,7 @@ const Dashboard = () => {
           </div>
           <div className="flex items-center gap-2">
             <JarvisButton variant="ghost" size="icon"><Bell size={18} /></JarvisButton>
-            <JarvisButton variant="ghost" size="icon"><Settings size={18} /></JarvisButton>
+            <JarvisButton variant="ghost" size="icon" onClick={() => setIsSettingsOpen(true)}><Settings size={18} /></JarvisButton>
             <JarvisButton variant="ghost" size="icon" onClick={handleLogout}><LogOut size={18} /></JarvisButton>
           </div>
         </motion.header>
@@ -116,7 +173,7 @@ const Dashboard = () => {
               </GlassPanel>
             </motion.div>
             <motion.div initial={{ opacity: 0, x: -30 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }} className="h-50">
-              <WeatherWidget />
+              <WeatherWidget location={city} />
             </motion.div>
             <motion.div initial={{ opacity: 0, x: -30 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }} className="h-50">
               {startbutton && (
@@ -169,16 +226,19 @@ const Dashboard = () => {
               transform: `translate(${mousePosition.x * 0.3}px, ${mousePosition.y * 0.3}px)`,
             }}
           >
-            <ClockStats/>
+            <ClockStats use24hrFormat={use24hrFormat} />
           </motion.div>
           
             {/* Quick actions panel */}
             <NewsFeedWidget />
-
+            
+            {useVideo && <Video/>}
             {isSystemTrayOpen && (
-              <GlassPanel className="p-4 ">
-                <QuickAction />
-              </GlassPanel>
+              <div className="absolute bottom-20 right-5 z-40">
+                <GlassPanel className="p-4 ">
+                  <QuickAction />
+                </GlassPanel>
+              </div>
             )}
             {isclockOpen && (
               <GlassPanel className="absolute bottom-[50px] right-5  p-4">
@@ -204,9 +264,9 @@ const Dashboard = () => {
               }}
               >
                 <Home size={14}/>
-
+  
               </JarvisButton>
-           
+              
         <div className="text-xs text-muted-foreground font-orbitron tracking-wider flex items-center gap-2 relative">
             <JarvisButton
               variant="ghost"
@@ -226,11 +286,21 @@ const Dashboard = () => {
               <JarvisButton variant="ghost"  className="pointer-events-auto px-3 min-w-[80px]"
                 onClick={()=>setIsClockOpen(!isclockOpen)}
               >
-                <span className="font-orbitron">{formatTime(time)}</span>
+                <span className="font-orbitron">{formatTime(time, !use24hrFormat)}</span>
               </JarvisButton>
             </div>
         </div>
       </motion.div>
+        
+      <SettingsWindow 
+        isOpen={isSettingsOpen} 
+        onClose={() => setIsSettingsOpen(false)} 
+        currentUseVideo={useVideo}
+        onUseVideoChange={setUseVideo}
+        currentCity={city}
+        onCityChange={setCity}
+        
+      />
     </div>
   );
 };

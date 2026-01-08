@@ -20,12 +20,10 @@ class CommunicationManager {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
-
-    console.info("WebSocket: connecting to", this.url);
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
-      console.info("WebSocket: connected");
+  
       // flush queued messages
       while (this.queue.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
         const msg = this.queue.shift()!;
@@ -36,15 +34,12 @@ class CommunicationManager {
     };
 
     this.ws.onmessage = (event) => {
-      console.log("WebSocket: recv ->", event.data);
       for (const fn of this.listeners) fn(event.data);
     };
 
     this.ws.onclose = (ev) => {
-      console.warn("WebSocket: closed", ev);
       if (this.shouldReconnect) {
         const delay = this.reconnectDelay;
-        console.info(`WebSocket: reconnecting in ${delay}ms...`);
         setTimeout(() => {
           this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 10000);
           this.connect();
@@ -53,7 +48,6 @@ class CommunicationManager {
     };
 
     this.ws.onerror = (err) => {
-      console.error("WebSocket: error", err);
       // errors will usually be followed by close
     };
   }
@@ -73,7 +67,7 @@ class CommunicationManager {
     try {
       this.sendMessage(JSON.stringify(obj));
     } catch (err) {
-      console.error('WebSocket: failed to send JSON', err);
+      
     }
   }
 

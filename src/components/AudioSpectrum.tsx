@@ -9,38 +9,6 @@ import { useSpeakingStore } from "@/stores/speaking";
 import { WakeWordCommunication } from "@/lib/client_websocket";
 
 
-
-
-const TranscriptionAnimation = ({ text }: { text: string }) => {
-  if (!text) return <p className="text-xs text-muted-foreground mt-2"></p>;
-  const chars = text.split('  ');
-
-  const container = {
-    hidden: {},
-    visible: { transition: { staggerChildren: 0.02 } },
-  } as const;
-
-  const child = {
-    hidden: { opacity: 0, y: 6 },
-    visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 400, damping: 24 } },
-  } as const;
-
-  return (
-    <motion.p
-      className="mt-2 text-center text-sm font-rajdhani text-primary glow-text shimmer-wrap"
-      variants={container}
-      initial="hidden"
-      animate="visible"
-      aria-live="polite"
-    >
-      {chars.map((c, i) => (
-        <motion.span key={i} className="inline-block" variants={child}>
-          {c}
-        </motion.span>
-      ))}
-    </motion.p>
-  );
-};
 const ListeningAnimation = ({ isTranscribing, isListening }: { isTranscribing: boolean; isListening: boolean; }) => {
   let  isSpeaking = useSpeakingStore((s) => s.isSpeaking);
   const text = isTranscribing ? "TRANSCRIBING..." : isSpeaking ? "SPEAKING..." : isListening ? "LISTENING..." : "AWAITING VOICE COMMAND";
@@ -599,9 +567,6 @@ export const AudioSpectrum = () => {
         transition={{ delay: 0.5 }}
       >
         <ListeningAnimation isTranscribing={isTranscribing} isListening={isListening} />
-        {transcription.length> 0 && (
-        <TranscriptionAnimation text={transcriptions.at(-1).text[0]} />
-        )}
       </motion.div>
     </div>
   );

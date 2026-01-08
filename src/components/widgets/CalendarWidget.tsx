@@ -1,21 +1,16 @@
 import { motion } from "framer-motion";
 import { Calendar, Clock, ChevronLeft, ChevronRight } from "lucide-react";
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Communication } from "@/lib/client_websocket";
+import { toast } from "sonner";
 
 interface Event {
   id: string;
-  title: string;
+  name: string;
   time: string;
   type: "meeting" | "reminder" | "task";
 }
-
-const mockEvents: Event[] = [
-  { id: "1", title: "System Diagnostic", time: "09:00", type: "task" },
-  { id: "2", title: "Security Review", time: "11:30", type: "meeting" },
-  { id: "3", title: "Database Backup", time: "14:00", type: "reminder" },
-  { id: "4", title: "Performance Analysis", time: "16:30", type: "task" },
-];
 
 const typeColors = {
   meeting: "bg-jarvis-cyan text-jarvis-cyan",
@@ -25,7 +20,8 @@ const typeColors = {
 
 export const CalendarWidget = () => {
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [events] = useState<Event[]>(mockEvents);
+  const [isLoading, setIsLoading] = useState(false);
+  const [events, setEvents] = useState<Event[]>([]);
 
   const daysOfWeek = ["S", "M", "T", "W", "T", "F", "S"];
   const today = new Date();
@@ -50,6 +46,40 @@ export const CalendarWidget = () => {
       month: "long",
     });
   };
+
+
+  // Load events from database via websocket
+  const loadEvents = async () => {
+    try {
+      setIsLoading(true);
+      // Send a message to the server to get events
+      Communication.sendMessage(JSON.stringify({ 
+        type: 'get_events',
+        request_id: 'load_events'
+      }));
+      
+      // Set up a temporary listener for the response
+      const off = Communication.onMessage((msg) => {
+        try {
+          const data = JSON.parse(msg);
+          if (data.request_id === 'load_events' && data.type === 'events_response') {
+            setEvents(data.payload?.events || []);
+            off(); // Remove the listener after receiving the response
+          }
+        } catch (e) {
+          console.error('Error parsing events response:', e);
+        }
+      });
+    } catch (error) {
+      console.error('Error loading events:', error);
+      toast.error('Failed to load events');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  useEffect(()=>{
+    loadEvents()
+  },[])
   return (
     <GlassPanel className="p-4 h-full flex flex-col">
       <div className="flex items-center justify-between mb-3">
@@ -133,10 +163,12 @@ export const CalendarWidget = () => {
           >
             <div className={`w-1 h-8 rounded-full ${typeColors[event.type].split(" ")[0]}`} />
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-rajdhani text-foreground truncate">{event.title}</p>
+              <p className="text-xs font-rajdhani text-foreground truncate">{event.name}</p>
               <p className="text-[10px] text-muted-foreground flex items-center gap-1">
                 <Clock size={8} />
-                {event.time}
+              
+                {event.time.substring(11, 19)}
+                
               </p>
             </div>
           </motion.div>

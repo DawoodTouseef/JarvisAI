@@ -1,4 +1,4 @@
-from fastapi import FastAPI,WebSocket,WebSocketDisconnect
+from fastapi import FastAPI,WebSocket,WebSocketDisconnect, APIRouter
 from connection_manager import ConnectionManager
 import psutil
 import asyncio
@@ -6,6 +6,9 @@ import pynvml
 import time
 import pocketsphinx
 from os.path import join as pathjoin
+from settings import settings_manager
+import json
+
 app = FastAPI(
     title="Jarvis websocket server",
     lifespan=None,
@@ -14,14 +17,122 @@ app = FastAPI(
 
 
 manager = ConnectionManager()
+
 pynvml.nvmlInit()
+
 MODEL_PATH = pocketsphinx.get_model_path()
+
 @app.websocket("/communicate")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
+            
+            # Check if the message is a settings-related request
+            try:
+                parsed_data = json.loads(data)
+                if isinstance(parsed_data, dict):
+                    message_type = parsed_data.get('type')
+                    print(f"Received message type: {message_type}")
+                    if message_type == 'get_settings':
+                        # Return current settings
+                        settings = settings_manager.get_settings()
+                        response = {
+                            'type': 'settings_response',
+                            'request_id': parsed_data.get('request_id'),
+                            'payload': settings
+                        }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        continue
+                    elif message_type == 'save_settings':
+                        # Save the new settings
+                        new_settings = parsed_data.get('payload', {})
+                        success = settings_manager.update_settings(new_settings)
+                        response = {
+                            'type': 'save_settings_response',
+                            'request_id': parsed_data.get('request_id'),
+                            'success': success,
+                            'error': None if success else 'Failed to save settings'
+                        }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        continue
+                    elif message_type == 'get_events':
+                        # Return stored events
+                        events = settings_manager.get_events()
+                        response = {
+                            'type': 'events_response',
+                            'request_id': parsed_data.get('request_id'),
+                            'payload': {'events': events}
+                        }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        continue
+                    elif message_type == 'save_event':
+                        # Save a new event
+                        event_data = parsed_data.get('payload', {})
+                        success = settings_manager.save_event(event_data)
+                        if success:
+                            response = {
+                                'type': 'save_event_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': True,
+                                'payload': event_data
+                            }
+                        else:
+                            response = {
+                                'type': 'save_event_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': False,
+                                'error': 'Failed to save event'
+                            }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        continue
+                    elif message_type == 'update_event':
+                        # Update an existing event
+                        event_data = parsed_data.get('payload', {})
+                        success = settings_manager.update_event(event_data)
+                        if success:
+                            response = {
+                                'type': 'update_event_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': True,
+                                'payload': event_data
+                            }
+                        else:
+                            response = {
+                                'type': 'update_event_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': False,
+                                'error': 'Failed to update event'
+                            }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        continue
+                    elif message_type == 'delete_event':
+                        # Delete an existing event
+                        event_id = parsed_data.get('payload', {}).get('id')
+                        if event_id:
+                            success = settings_manager.delete_event(event_id)
+                            response = {
+                                'type': 'delete_event_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': success,
+                                'error': None if success else 'Failed to delete event'
+                            }
+                        else:
+                            response = {
+                                'type': 'delete_event_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': False,
+                                'error': 'Event ID is required'
+                            }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        continue
+                    
+            except json.JSONDecodeError:
+                # Not a JSON message, continue with normal processing
+                pass
+            
+            # Handle normal message
             await manager.send_personal_message(f"Received:{data}",websocket)
     except WebSocketDisconnect:
         # Remove disconnected socket from active list if present
@@ -126,10 +237,11 @@ async def hotword(websocket: WebSocket):
                 
                 hyp = decoder.hyp()
                 if hyp and hyp.hypstr:
+                    best_score = hyp.best_score 
                     hyp_str = hyp.hypstr.lower()
+                    print(f"Decoder hypothesis score: {best_score}")
                     print(f"Decoder hypothesis: {hyp_str}")
-                    
-                    if 'jarvis' in hyp_str:
+                    if 'jarvis' in hyp_str and best_score > 1e-40:
                         print("Wake word 'jarvis' detected!")
                         try:
                             await manager.send_personal_message(
@@ -142,8 +254,7 @@ async def hotword(websocket: WebSocket):
                         # Reset decoder for next detection
                         decoder.end_utt()
                         decoder.start_utt()
-                from os import remove
-                remove(wav_file)
+                
             except Exception as e:
                 print(f"Error processing audio: {e}")
                 import traceback
@@ -159,6 +270,7 @@ async def hotword(websocket: WebSocket):
             pass
 
 
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)

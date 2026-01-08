@@ -16,6 +16,8 @@ interface WeatherWidgetProps {
   // Human-readable location name (e.g., "New York", "Paris", "Tokyo").
   // Defaults to "New York" for backward compatibility.
   location?: string;
+  // Optional function to get the location from settings
+  getCityFromSettings?: () => string;
 }
 
 // Map Open-Meteo weather codes to simplified conditions used by the UI
@@ -29,17 +31,20 @@ const mapWeatherCodeToCondition = (code: number | undefined): WeatherData["condi
   return "cloudy";
 };
 
-export const WeatherWidget = ({ location = "Bangalore" }: WeatherWidgetProps) => {
+export const WeatherWidget = ({ location = "Bangalore", getCityFromSettings }: WeatherWidgetProps) => {
   const [weather, setWeather] = useState<WeatherData>({
     temperature: 0,
     condition: "sunny",
     humidity: 0,
     windSpeed: 0,
-    location,
+    location: getCityFromSettings ? getCityFromSettings() : location,
     feelsLike: 0,
   });
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // Get the actual location to use (from settings if available, otherwise from props)
+  const actualLocation = getCityFromSettings ? getCityFromSettings() : location;
 
   // Fetch real-time weather when location changes and periodically refresh
   useEffect(() => {
@@ -53,7 +58,7 @@ export const WeatherWidget = ({ location = "Bangalore" }: WeatherWidgetProps) =>
 
         // 1) Geocode the location to coordinates
         const geoRes = await fetch(
-          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`,
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(actualLocation)}&count=1&language=en&format=json`,
           { signal: controller.signal }
         );
         if (!geoRes.ok) throw new Error("Geocoding failed");
@@ -87,7 +92,7 @@ export const WeatherWidget = ({ location = "Bangalore" }: WeatherWidgetProps) =>
           windSpeed: wind,
           feelsLike: feels,
           condition: mapWeatherCodeToCondition(code),
-          location: displayLocation || location,
+          location: displayLocation || actualLocation,
         });
       } catch (e: any) {
         if (cancelled) return;
@@ -106,7 +111,7 @@ export const WeatherWidget = ({ location = "Bangalore" }: WeatherWidgetProps) =>
       controller.abort();
       clearInterval(interval);
     };
-  }, [location]);
+  }, [actualLocation]);
 
   const WeatherIcon = weather.condition === "sunny" ? Sun : weather.condition === "rainy" ? CloudRain : Cloud;
 

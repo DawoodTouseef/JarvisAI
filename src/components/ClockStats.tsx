@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Clock, Calendar, Cpu, HardDrive, Wifi, ChevronDown, ChevronUp, Activity, X } from "lucide-react";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { StatusCommunication } from "@/lib/client_websocket";
+import { toast } from "@/components/ui/use-toast";
+import { Communication } from "@/lib/client_websocket";
 
 interface SystemStat {
   label: string;
@@ -11,7 +13,11 @@ interface SystemStat {
   color: string;
 }
 
-export const ClockStats = () => {
+interface ClockStatsProps {
+  use24hrFormat?: boolean;
+}
+
+export const ClockStats: React.FC<ClockStatsProps> = ({ use24hrFormat = false }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [time, setTime] = useState(new Date());
   const [uptime , setUptime] = useState<number>(null);
@@ -28,6 +34,10 @@ export const ClockStats = () => {
     return () => clearInterval(tick);
   }, []);
 
+  // Update time when use24hrFormat changes to force re-render
+  useEffect(() => {
+    setTimeout(() => formatTime(time), 500);
+  }, [use24hrFormat]);
   useEffect(() => {
     const off = StatusCommunication.onMessage((data) => {
       try {
@@ -49,7 +59,7 @@ export const ClockStats = () => {
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString("en-US", {
-      hour12: false,
+      hour12: !use24hrFormat,
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
@@ -70,7 +80,7 @@ export const ClockStats = () => {
     t.setSeconds(secs);
     return t;
   }
-
+  
   return (
     <div className="relative">
       <motion.div
@@ -89,7 +99,7 @@ export const ClockStats = () => {
             <div>
               <div className="flex items-center gap-2 text-primary">
                 <Clock size={16} />
-                <span className="font-orbitron text-2xl tracking-wider glow-text">
+                <span className="font-orbitron text-2xl tracking-wider glow-text" key={use24hrFormat.toString()}>
                   {formatTime(time)}
                 </span>
               </div>
@@ -121,7 +131,7 @@ export const ClockStats = () => {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-primary">
                   <Clock size={16} />
-                  <span className="font-orbitron text-2xl tracking-wider glow-text">
+                  <span className="font-orbitron text-2xl tracking-wider glow-text" key={`expanded-${use24hrFormat.toString()}`}>
                     {formatTime(time)}
                   </span>
                 </div>
