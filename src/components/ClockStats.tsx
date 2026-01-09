@@ -21,6 +21,7 @@ export const ClockStats: React.FC<ClockStatsProps> = ({ use24hrFormat = false })
   const [isExpanded, setIsExpanded] = useState(false);
   const [time, setTime] = useState(new Date());
   const [uptime , setUptime] = useState<number>(null);
+  const [timeKey, setTimeKey] = useState(0);
   const [stats, setStats] = useState<SystemStat[]>([
     { label: "CPU", value: 0, icon: <Cpu size={14} />, color: "jarvis-cyan" },
     { label: "Memory", value: 0, icon: <HardDrive size={14} />, color: "jarvis-blue" },
@@ -36,7 +37,7 @@ export const ClockStats: React.FC<ClockStatsProps> = ({ use24hrFormat = false })
 
   // Update time when use24hrFormat changes to force re-render
   useEffect(() => {
-    setTimeout(() => formatTime(time), 500);
+    setTimeKey(prev => prev + 1);
   }, [use24hrFormat]);
   useEffect(() => {
     const off = StatusCommunication.onMessage((data) => {
@@ -99,7 +100,7 @@ export const ClockStats: React.FC<ClockStatsProps> = ({ use24hrFormat = false })
             <div>
               <div className="flex items-center gap-2 text-primary">
                 <Clock size={16} />
-                <span className="font-orbitron text-2xl tracking-wider glow-text" key={use24hrFormat.toString()}>
+                <span className="font-orbitron text-2xl tracking-wider glow-text" key={`time-${timeKey}-${use24hrFormat}`}>
                   {formatTime(time)}
                 </span>
               </div>
@@ -131,7 +132,7 @@ export const ClockStats: React.FC<ClockStatsProps> = ({ use24hrFormat = false })
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-primary">
                   <Clock size={16} />
-                  <span className="font-orbitron text-2xl tracking-wider glow-text" key={`expanded-${use24hrFormat.toString()}`}>
+                  <span className="font-orbitron text-2xl tracking-wider glow-text" key={`expanded-${timeKey}-${use24hrFormat}`}>
                     {formatTime(time)}
                   </span>
                 </div>

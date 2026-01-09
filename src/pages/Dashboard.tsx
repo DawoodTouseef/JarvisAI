@@ -44,6 +44,11 @@ const Dashboard = () => {
     window.addEventListener("mousemove", handleMouseMove);
     return () => window.removeEventListener("mousemove", handleMouseMove);
   }, [handleMouseMove]);
+  useEffect(() => {
+    const tick = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+
   const loadSettings = async () => {
       try {
         // Send a message to the server to get settings
@@ -94,9 +99,12 @@ const Dashboard = () => {
       }
     };
     
-    const settingsUpdateListener = Communication.onMessage(handleSettingsUpdate);
   useEffect(() => {
-    settingsUpdateListener();
+    const settingsUpdateListener = Communication.onMessage(handleSettingsUpdate);
+    
+    return () => {
+      settingsUpdateListener();
+    };
   }, []);
   
   const handleLogout = async() => {
@@ -116,9 +124,9 @@ const Dashboard = () => {
     navigate("/login");
     }
   };
-  const formatTime = (date: Date, use24hrFormats: boolean) => {
+  const formatTime = (date: Date, use24HourFormat: boolean) => {
     return date.toLocaleTimeString("en-US", {
-      hour12: use24hrFormats,
+      hour12: !use24HourFormat,
       hour: "2-digit",
       minute: "2-digit",
     });
@@ -126,6 +134,11 @@ const Dashboard = () => {
   useEffect(() => {
     loadSettings();
   }, []);
+  
+  // Force time update when format changes
+  useEffect(() => {
+    setTime(new Date());
+  }, [use24hrFormat]);
   return (
     <div className="min-h-screen relative overflow-hidden">
       <ParticleField />
@@ -286,7 +299,7 @@ const Dashboard = () => {
               <JarvisButton variant="ghost"  className="pointer-events-auto px-3 min-w-[80px]"
                 onClick={()=>setIsClockOpen(!isclockOpen)}
               >
-                <span className="font-orbitron">{formatTime(time, !use24hrFormat)}</span>
+                <span className="font-orbitron">{formatTime(time, use24hrFormat)}</span>
               </JarvisButton>
             </div>
         </div>

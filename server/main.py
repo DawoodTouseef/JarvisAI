@@ -8,7 +8,17 @@ import pocketsphinx
 from os.path import join as pathjoin
 from settings import settings_manager
 import json
+from datetime import datetime
+from deepface import DeepFace as df  
+from pathlib import Path
 
+JARVIS_DIR = Path(__file__).resolve().parent
+
+# Create faces directory if it doesn't exist
+faces_dir = JARVIS_DIR / "faces"
+
+print("Creating faces directory if it doesn't exist...", faces_dir)
+faces_dir.mkdir(parents=True, exist_ok=True)
 app = FastAPI(
     title="Jarvis websocket server",
     lifespan=None,
@@ -126,24 +136,105 @@ async def websocket_endpoint(websocket: WebSocket):
                                 'error': 'Event ID is required'
                             }
                         await manager.send_personal_message(json.dumps(response), websocket)
-                        continue
-                    
+                    elif message_type == 'face_recognition':
+                        # Handle face recognition requests
+                        action = parsed_data.get('action')
+                        if action == 'get_models':
+                            # Return all face recognition models
+                            models = settings_manager.get_face_recognition_models()
+                            response = {
+                                'type': 'face_recognition_models_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'payload': {'models': models}
+                            }
+                            await manager.send_personal_message(json.dumps(response), websocket)
+                        elif action == 'save_model':
+                            # Save a new face recognition model
+                            model_data = parsed_data.get('payload', {})
+                            
+                            # Receive image data
+                            image_data = await websocket.receive_bytes()
+                            
+                            # Save the image file
+                            import uuid
+                            import os
+                            
+                            
+                            # Create faces directory if it doesn't exist
+                            faces_dir = "./faces"
+                            os.makedirs(faces_dir, exist_ok=True)
+                            
+                            # Generate unique filename
+                            file_extension = model_data.get('extension', '.jpg')
+                            filename = f"{uuid.uuid4()}{file_extension}"
+                            file_path = os.path.join(faces_dir, filename)
+                            
+                            # Save the image file
+                            with open(file_path, 'wb') as f:
+                                f.write(image_data)
+                            
+                            # Update model data with file information
+                            model_data.update({
+                                'id': str(uuid.uuid4()),
+                                'filename': filename,
+                                'filepath': file_path,
+                                'uploaded_at': datetime.now().isoformat(),
+                                'isActive': True
+                            })
+                            
+                            success = settings_manager.save_face_recognition_model(model_data)
+                            response = {
+                                'type': 'face_recognition_save_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': success,
+                                'error': None if success else 'Failed to save face recognition model'
+                            }
+                            await manager.send_personal_message(json.dumps(response), websocket)
+                        elif action == 'delete_model':
+                            # Delete a face recognition model
+                            model_id = parsed_data.get('payload', {}).get('id')
+                            if model_id:
+                                success = settings_manager.delete_face_recognition_model(model_id)
+                                response = {
+                                    'type': 'face_recognition_delete_response',
+                                    'request_id': parsed_data.get('request_id'),
+                                    'success': success,
+                                    'error': None if success else 'Failed to delete face recognition model'
+                                }
+                            else:
+                                response = {
+                                    'type': 'face_recognition_delete_response',
+                                    'request_id': parsed_data.get('request_id'),
+                                    'success': False,
+                                    'error': 'Model ID is required'
+                                }
+                            await manager.send_personal_message(json.dumps(response), websocket)
             except json.JSONDecodeError:
                 # Not a JSON message, continue with normal processing
                 pass
             
-            # Handle normal message
-            await manager.send_personal_message(f"Received:{data}",websocket)
+            # Handle normal message - echo back as JSON for structured response
+            try:
+                from datetime import datetime as dt
+                response = {
+                    "type": "echo",
+                    "message": data,
+                    "timestamp": str(dt.now())
+                }
+                await manager.send_personal_message(json.dumps(response), websocket)
+            except Exception as e:
+                print(f"Error sending echo response: {e}")
     except WebSocketDisconnect:
         # Remove disconnected socket from active list if present
-        try:
-            manager.disconnect(websocket)
-        except ValueError:
-            pass
+        manager.disconnect(websocket)
         # Safely notify remaining connected clients that one has disconnected
         for conn in list(manager.active_connections):
             try:
-                await manager.send_personal_message("Client disconnected", conn)
+                await manager.send_personal_message(json.dumps({
+                    "type": "notification",
+                    "message": "Client disconnected",
+                    "timestamp": str(dt.now())
+                }), conn)
             except Exception:
                 # ignore errors when sending to other clients
                 pass
@@ -188,7 +279,7 @@ async def send_info(websocket: WebSocket):
             import json 
             await manager.send_personal_message(json.dumps({"CPU": cpu, "Memory": memory, "Network": net, "GPU": gpu,"UP_TIME":up_time}), websocket)
             await asyncio.sleep(5)
-    except WebSocketDisconnect as e:
+    except WebSocketDisconnect:
         manager.disconnect(websocket)
 
 
@@ -209,6 +300,118 @@ def create_decoder():
         print(f"Failed to set keyphrase: {e}")
     
     return decoder
+
+@app.websocket("/face_recognition")
+async def face_recognition_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    print("Face Recognition WebSocket connected")
+    
+    try:
+        while True:
+            data = await websocket.receive_text()
+            
+            try:
+                parsed_data = json.loads(data)
+                if isinstance(parsed_data, dict):
+                    action = parsed_data.get('action')
+                    print(f"Face recognition action: {action}")
+                    
+                    if action == 'get_models':
+                        # Get all face recognition models
+                        models = settings_manager.get_face_recognition_models()
+                        response = {
+                            'type': 'face_recognition_models_response',
+                            'request_id': parsed_data.get('request_id'),
+                            'payload': {
+                                'models': models
+                            }
+                        }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        
+                    elif action == 'save_model':
+                        # Save a new face recognition model
+                        model_data = parsed_data.get('payload', {})
+                        
+                        # Receive image data
+                        image_data = await websocket.receive_bytes()
+                        
+                        # Save the image file
+                        import uuid
+                        import os
+                        from datetime import datetime
+                        
+                        
+                        # Generate unique filename
+                        file_extension = model_data.get('extension', '.jpg')
+                        filename = f"{uuid.uuid4()}{file_extension}"
+                        file_path = os.path.join(faces_dir, filename)
+                        
+                        # Save the image file
+                        with open(file_path, 'wb') as f:
+                            f.write(image_data)
+                        
+                        # Update model data with file information
+                        model_data.update({
+                            'id': str(uuid.uuid4()),
+                            'filename': filename,
+                            'filepath': file_path,
+                            'uploaded_at': datetime.now().isoformat(),
+                            'isActive': True
+                        })
+                        
+                        success = settings_manager.save_face_recognition_model(model_data)
+                        response = {
+                            'type': 'face_recognition_save_response',
+                            'request_id': parsed_data.get('request_id'),
+                            'success': success,
+                            'error': None if success else 'Failed to save face recognition model'
+                        }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        
+                    elif action == 'delete_model':
+                        # Delete a face recognition model
+                        model_id = parsed_data.get('payload', {}).get('id')
+                        if model_id:
+                            success = settings_manager.delete_face_recognition_model(model_id)
+                            response = {
+                                'type': 'face_recognition_delete_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': success,
+                                'error': None if success else 'Failed to delete face recognition model'
+                            }
+                        else:
+                            response = {
+                                'type': 'face_recognition_delete_response',
+                                'request_id': parsed_data.get('request_id'),
+                                'success': False,
+                                'error': 'Model ID is required'
+                            }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        
+                    else:
+                        # Unknown action
+                        response = {
+                            'type': 'face_recognition_error',
+                            'request_id': parsed_data.get('request_id'),
+                            'error': f'Unknown action: {action}'
+                        }
+                        await manager.send_personal_message(json.dumps(response), websocket)
+                        
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error: {e}")
+                response = {
+                    'type': 'face_recognition_error',
+                    'error': 'Invalid JSON format'
+                }
+                await manager.send_personal_message(json.dumps(response), websocket)
+                
+    except WebSocketDisconnect:
+        print("Face Recognition WebSocket disconnected")
+    except Exception as e:
+        print(f"Face Recognition WebSocket error: {e}")
+    finally:
+        manager.disconnect(websocket)
+
 
 @app.websocket("/hotword")
 async def hotword(websocket: WebSocket):
@@ -268,9 +471,19 @@ async def hotword(websocket: WebSocket):
             decoder.end_utt()
         except:
             pass
-
-
+@app.websocket("/face-verification")
+async def face_verification(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            from io import BytesIO
+            dfs = df.find(BytesIO(data), db_path="")
+            print(dfs)
+            
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

@@ -11,8 +11,8 @@ class CommunicationManager {
   private shouldReconnect = true;
   private reconnectDelay = 1000; // start with 1s
 
-  constructor(url = "ws://localhost:8000/communicate", autoConnect = true) {
-    this.url = url;
+  constructor(url?: string, autoConnect = true) {
+    this.url = url || `ws://localhost:8000/communicate`;
     if (autoConnect) this.connect();
   }
 
@@ -104,7 +104,7 @@ class HotwordCommunicationManager {
   private reconnectDelay = 1000;
 
   constructor(url?: string, autoConnect = true) {
-    const base =  'http://localhost:8000';
+    const base = `http://localhost:8000`;
     const wsUrl = (url || base.replace(/^http/, 'ws')) + '/hotword';
     this.url = wsUrl;
     if (autoConnect) this.connect();
@@ -177,8 +177,8 @@ class StatusManager {
   private shouldReconnect = true;
   private reconnectDelay = 1000; // start with 1s
 
-  constructor(url = "ws://localhost:8000/info", autoConnect = true) {
-    this.url = url;
+  constructor(url?: string, autoConnect = true) {
+    this.url = url || `ws://localhost:8000/info`;
     if (autoConnect) this.connect();
   }
 

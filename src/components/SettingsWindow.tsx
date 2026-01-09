@@ -11,6 +11,7 @@ import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from './ui/dialog';
 import { Textarea } from './ui/textarea';
+import { FaceRecognition } from './FaceRecognition';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +39,7 @@ interface AppSettings {
   useVideo: boolean;
   city: string;
   use24hrFormat: boolean;
+  useFaceRecognition: boolean;
   
 }
 export enum TaskType {
@@ -59,7 +61,7 @@ export const SettingsWindow = ({
    isOpen, onClose, onUseVideoChange, currentUseVideo, 
    onCityChange, currentCity }: SettingsWindowProps) => {
   const [settings, setSettings] = useState<AppSettings>({ useVideo: currentUseVideo || false, 
-    city: currentCity || 'New York', use24hrFormat: false });
+    city: currentCity || 'New York', use24hrFormat: false, useFaceRecognition: false });
   const [isLoading, setIsLoading] = useState(true);
   const [isWeatherOpen, setIsWeatherOpen] = useState(false);
   const [addEvent, setAddEvent] = useState<boolean>(false);
@@ -67,7 +69,7 @@ export const SettingsWindow = ({
   const [isEventsOpen, setIsEventsOpen] = useState(false);
   const [isEditEventOpen, setIsEditEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
-  
+  const [isFaceRecognitionOpen, setIsFaceRecognitionOpen] = useState(true);
   // Confirmation dialog states
   const [confirmDelete, setConfirmDelete] = useState<{open: boolean, eventId: string | null}>({open: false, eventId: null});
   const [confirmUpdate, setConfirmUpdate] = useState<{open: boolean}>({open: false});
@@ -321,7 +323,8 @@ export const SettingsWindow = ({
               setSettings({
                 useVideo: data.payload?.useVideo ?? false,
                 city: data.payload?.city ?? 'New York',
-                use24hrFormat: data.payload?.use24hrFormat ?? false
+                use24hrFormat: data.payload?.use24hrFormat ?? false,
+                useFaceRecognition: data.payload?.useFaceRecognition ?? false
               });
               off(); // Remove the listener after receiving the response
             }
@@ -380,6 +383,13 @@ export const SettingsWindow = ({
     setSettings(newSettings);
     saveSettings(newSettings);
   };
+  const handleFaceRecognitionChange = (checked: boolean) => {
+    const newSettings = { ...settings, useFaceRecognition: checked };
+    setSettings(newSettings);
+    saveSettings(newSettings);
+    setIsFaceRecognitionOpen(checked);
+  };
+  
   // Debounced search function to avoid too many API calls
   const debouncedSearch = useCallback(
     debounce(async (searchTerm: string) => {
@@ -629,7 +639,25 @@ export const SettingsWindow = ({
             </div>
           </div>
         )}
-        
+        {isFaceRecognitionOpen && (
+            <div className="pt-2">
+              <JarvisButton size="icon" variant='ghost' onClick={() => setIsFaceRecognitionOpen(!isFaceRecognitionOpen)}>
+                <ArrowLeft size={16}/>
+              </JarvisButton>
+              <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-orbitron text-sm text-primary tracking-wider">Use Face Recognition</h3>
+              <p className="text-xs text-muted-foreground">Enable or disable face recognition</p>
+            </div>
+            <Switch
+              checked={settings.useFaceRecognition}
+              onCheckedChange={handleFaceRecognitionChange}
+              disabled={isLoading}
+            />
+          </div>
+              <FaceRecognition />
+            </div>
+          )}
         {selectedEvent && (
         <Dialog open={isEditEventOpen} onOpenChange={setIsEditEventOpen}>
           <DialogContent className="glass-panel border-jarvis-cyan/30 max-w-md">
@@ -797,8 +825,7 @@ export const SettingsWindow = ({
             </form>
           </DialogContent>
         </Dialog>
-        
-        {!isWeatherOpen && !isEventsOpen && (
+        {!isWeatherOpen && !isEventsOpen && !isFaceRecognitionOpen && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
@@ -836,9 +863,22 @@ export const SettingsWindow = ({
             </div>
             <ArrowRight size={16} className="text-muted-foreground" onClick={() => setIsEventsOpen(true)} />
           </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <JarvisButton variant='ghost' onClick={() => setIsFaceRecognitionOpen(!isFaceRecognitionOpen)} 
+                value={isFaceRecognitionOpen ? 'On' : 'Off'}
+                >
+                Use Face Recognition
+              </JarvisButton>
+            </div>
+            <Switch
+              checked={settings.useFaceRecognition}
+              onCheckedChange={handleFaceRecognitionChange}
+              disabled={isLoading}
+            />
+          </div>
         </div>
         )}
-        
         {/* Delete Confirmation Dialog */}
         <AlertDialog open={confirmDelete.open} onOpenChange={(open) => setConfirmDelete({open, eventId: confirmDelete.eventId})}>
           <AlertDialogContent className="glass-panel border-jarvis-cyan/30">

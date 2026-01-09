@@ -2,14 +2,17 @@
   "name": "jarvisAI",
   "private": true,
   "version": "0.0.0",
+  "main": "electron.js",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm:discover\" \"vite\"",
+    "dev": "concurrently \"npm:discover\" \"npm:frontend\" \"npm:backend\"",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "discover": "node discoveryserver/discovery.cjs"
+    "discover": "node discoveryserver/discovery.cjs",
+    "backend": "python server/main.py",
+    "frontend": "vite"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -76,6 +79,10 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/cli": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/ios": "^8.0.0",
     "@eslint/js": "^9.32.0",
     "@tailwindcss/typography": "^0.5.16",
     "@types/node": "^22.16.5",
@@ -84,6 +91,8 @@
     "@vitejs/plugin-react-swc": "^3.11.0",
     "autoprefixer": "^10.4.21",
     "concurrently": "^8.2.0",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.4.0",
     "eslint": "^9.32.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
@@ -92,6 +101,31 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.38.0",
-    "vite": "^5.4.19"
+    "vite": "^5.4.19",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.jarvisai.app",
+    "productName": "Jarvis AI",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron.js",
+      "preload.js",
+      "server/**/*",
+      "discoveryserver/**/*",
+      "node_modules/**/*"
+    ],
+    "mac": {
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }

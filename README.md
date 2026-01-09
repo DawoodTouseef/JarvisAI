@@ -35,6 +35,8 @@ An AI-powered console application inspired by JARVIS from Marvel's Iron Man, des
 - Node.js 18+
 - Python 3.8+
 - Git
+- For desktop builds: Electron and electron-builder
+- For mobile builds: Android Studio (for Android), Xcode (for iOS)
 
 ### Frontend Setup
 
@@ -70,6 +72,48 @@ python main.py
 ```
 
 The backend API will be available at `http://localhost:8000`
+
+## Building Cross-Platform Applications
+
+This application can be built for multiple platforms using Electron (desktop) and Capacitor (mobile).
+
+### Desktop Builds (Windows, Mac, Linux)
+
+```bash
+# Install dependencies
+npm install
+
+# Build the Python server executable
+npm run build:server
+
+# Build for specific platforms
+npm run electron:build:win    # Windows
+npm run electron:build:mac    # Mac
+npm run electron:build:linux  # Linux
+
+# Or build for all platforms
+npm run electron:build
+```
+
+### Mobile Builds (iOS, Android)
+
+For mobile, the backend server needs to be accessible over the network (run on a desktop machine).
+
+```bash
+# Install dependencies
+npm install
+
+# Sync web assets to mobile projects
+npm run cap:sync
+
+# Open in Android Studio
+npm run cap:android
+
+# Open in Xcode
+npm run cap:ios
+```
+
+Note: For mobile apps, ensure the server is running on the same network and update the WebSocket URLs if needed.
 
 ## Development
 

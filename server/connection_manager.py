@@ -1,4 +1,4 @@
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 import logging
 
 logger = logging.getLogger(__name__)
@@ -18,10 +18,23 @@ class ConnectionManager:
     async def send_personal_message(self, message: str, websocket: WebSocket):
         """Direct Message - handle closed sockets gracefully"""
         try:
+            # Check if WebSocket is in active connections before attempting to send
+            if websocket not in self.active_connections:
+                logger.debug("Attempted to send message to WebSocket not in active connections")
+                
+                return
             await websocket.send_text(message)
         except RuntimeError as e:
             # Raised when a close message has already been sent
-            logger.warning("WebSocket send failed (runtime): %s", e)
+            logger.debug("WebSocket send failed (runtime): %s", e)
+            try:
+                if websocket in self.active_connections:
+                    self.active_connections.remove(websocket)
+            except ValueError:
+                pass
+        except WebSocketDisconnect:
+            # WebSocket was disconnected during send
+            logger.debug("WebSocket disconnected during send operation")
             try:
                 if websocket in self.active_connections:
                     self.active_connections.remove(websocket)
@@ -40,6 +53,8 @@ class ConnectionManager:
         """disconnect event"""
         try:
             self.active_connections.remove(websocket)
+            logger.info(f"WebSocket disconnected and removed from active connections")
         except ValueError:
             # socket already removed; ignore
+            logger.info(f"WebSocket already removed from active connections")
             pass

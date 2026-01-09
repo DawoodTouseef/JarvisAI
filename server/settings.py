@@ -27,6 +27,8 @@ class SettingsManager:
             "auto_update": False,
             "city": "New York",
             "use24hrFormat": False,
+            "useFaceRecognition": False,
+            "faceRecognitionModels": [],
             "events": []
         }
         self.settings_collection.insert_one(default_settings)
@@ -47,6 +49,8 @@ class SettingsManager:
                 "auto_update": False,
                 "city": "New York",
                 "use24hrFormat": False,
+                "useFaceRecognition": False,
+                "faceRecognitionModels": [],
                 "events": []
             }
     
@@ -174,6 +178,87 @@ class SettingsManager:
                 return False
         except Exception as e:
             print(f"Error deleting event: {e}")
+            return False
+
+    def get_face_recognition_models(self) -> list:
+        """Retrieve all face recognition models from the database"""
+        settings_doc = self.settings_collection.find_one({})
+        if settings_doc and 'faceRecognitionModels' in settings_doc:
+            return settings_doc['faceRecognitionModels']
+        else:
+            return []
+    
+    def save_face_recognition_model(self, model_data: Dict[str, Any]) -> bool:
+        """Save a new face recognition model to the database"""
+        try:
+            # Get the existing document
+            existing_doc = self.settings_collection.find_one({})
+            
+            if existing_doc:
+                # Get current face recognition models and append the new one
+                current_models = existing_doc.get('faceRecognitionModels', [])
+                current_models.append(model_data)
+                
+                # Update the faceRecognitionModels array in the document
+                result = self.settings_collection.update_one(
+                    {"_id": existing_doc["_id"]},
+                    {"$set": {"faceRecognitionModels": current_models}}
+                )
+                return result.modified_count >= 0  # Success if no error occurred
+            
+            else:
+                # Create new settings document with the face recognition model
+                self.settings_collection.insert_one({"faceRecognitionModels": [model_data]})
+                return True
+        except Exception as e:
+            print(f"Error saving face recognition model: {e}")
+            return False
+    
+    def delete_face_recognition_model(self, model_id: str) -> bool:
+        """Delete a face recognition model from the database and filesystem"""
+        try:
+            # Get the existing document
+            existing_doc = self.settings_collection.find_one({})
+            
+            if existing_doc and 'faceRecognitionModels' in existing_doc:
+                # Find the model to delete (to get the file path)
+                current_models = existing_doc.get('faceRecognitionModels', [])
+                model_to_delete = None
+                
+                # Find the model with matching id
+                for model in current_models:
+                    if model.get('id') == model_id:
+                        model_to_delete = model
+                        break
+                
+                # Filter out the model with matching id
+                updated_models = [model for model in current_models if model.get('id') != model_id]
+                
+                # Update the faceRecognitionModels array in the document
+                result = self.settings_collection.update_one(
+                    {"_id": existing_doc["_id"]},
+                    {"$set": {"faceRecognitionModels": updated_models}}
+                )
+                
+                # If database update was successful and we found the model, delete the image file
+                if result.modified_count >= 0 and model_to_delete:
+                    try:
+                        # Delete the image file from filesystem
+                        file_path = model_to_delete.get('filepath')
+                        if file_path and os.path.exists(file_path):
+                            os.remove(file_path)
+                            print(f"Deleted face recognition image file: {file_path}")
+                        else:
+                            print(f"Image file not found or no filepath specified: {file_path}")
+                    except Exception as file_error:
+                        print(f"Warning: Could not delete image file {model_to_delete.get('filepath', 'unknown')}: {file_error}")
+                        # Don't return False here - database deletion was successful
+                
+                return result.modified_count >= 0
+            else:
+                return False
+        except Exception as e:
+            print(f"Error deleting face recognition model: {e}")
             return False
 
 # Create a global instance of SettingsManager
