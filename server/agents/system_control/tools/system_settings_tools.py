@@ -9,7 +9,7 @@ except ImportError:
     sbc = None
     AudioUtilities = None
 
-@register_tool("adjust_volume")
+@register_tool("adjust_volume", description="Set system volume level (0.0 to 1.0).")
 def adjust_volume(level: float) -> dict:
     """Adjust system volume (0.0 to 1.0)."""
     if not AudioUtilities:
@@ -24,7 +24,7 @@ def adjust_volume(level: float) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@register_tool("get_volume")
+@register_tool("get_volume", description="Get the current system volume level.")
 def get_volume() -> dict:
     if not AudioUtilities:
         return {"error": "pycaw not installed"}
@@ -38,7 +38,7 @@ def get_volume() -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@register_tool("adjust_brightness")
+@register_tool("adjust_brightness", description="Set screen brightness level (0 to 100).")
 def adjust_brightness(level: int) -> dict:
     """Adjust screen brightness (0 to 100)."""
     if not sbc:
@@ -50,7 +50,7 @@ def adjust_brightness(level: int) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@register_tool("get_brightness")
+@register_tool("get_brightness", description="Get the current screen brightness level.")
 def get_brightness() -> dict:
     if not sbc:
         return {"error": "screen_brightness_control not installed"}

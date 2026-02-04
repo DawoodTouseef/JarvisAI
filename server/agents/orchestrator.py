@@ -1,6 +1,6 @@
 # central_orchestrator.py
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from typing_extensions import TypedDict
 from datetime import datetime
 import json
@@ -60,13 +60,13 @@ class AgentWorkflowState(TypedDict):
 
 class CentralOrchestrator:
     def __init__(self):
-        self.agents: Dict[str, BaseAgent] = {}
+        self.agents: List[BaseAgent] = []
         self.checkpointer = MemorySaver()
         self.clarification_futures: Dict[str, asyncio.Future] = {}
         self.permission_futures: Dict[str, asyncio.Future] = {}
         self.event_callback: Optional[Any] = None
         self.active_tasks: Dict[str, asyncio.Task] = {}
-        self.cancelled_tasks: set = set()
+        self.cancelled_tasks: Set[str] = set()
         self.running_agents: Dict[str, BaseAgent] = {}
         
         self._register_default_agents()
@@ -80,6 +80,8 @@ class CentralOrchestrator:
     async def _emit_event(self, event_type: str, task_id: str, payload: Dict[str, Any]):
         """Helper to emit events via the callback"""
         if self.event_callback:
+            if task_id in self.cancelled_tasks and event_type in {"assistant_text_chunk", "assistant_text_final"}:
+                return None
             return await self.event_callback(event_type, task_id, payload)
 
     async def _update_state(self, task_id: str, state: OrchestratorState):
@@ -87,7 +89,6 @@ class CentralOrchestrator:
         await self._emit_event("orchestrator_state_update", task_id, {"state": state.value})
 
     def _register_default_agents(self):
-        from .personal_agent import PersonalAgent
         system=SystemAgentWrapper()
         system.set_event_callback(self._emit_event)
         self.agents = [
@@ -95,8 +96,6 @@ class CentralOrchestrator:
             ResponseGenerationAgent(),
             GeneralPurposeAgent(),
             system,
-            PersonalAgent(),
-            PersonalAgent(),
         ]
 
 
@@ -123,8 +122,10 @@ class CentralOrchestrator:
 
     async def submit_task(self, task_data: Dict[str, Any]) -> AgentWorkflowState:
         task_id = task_data["id"]
+        from .personal_agent import PersonalAgent
         os.environ['OPENAI_API_KEY'] = task_data.get("auth_token")
         os.environ['OPENAI_API_BASE'] = task_data.get("base_url")
+        self.agents.append(PersonalAgent(auth_token=task_data.get("auth_token"),server_url=task_data.get("base_url")))
         state: AgentWorkflowState = {
             "original_input": task_data["query"],
             "decomposed_tasks": [],
@@ -159,12 +160,20 @@ class CentralOrchestrator:
         finally:
             if task_id in self.active_tasks:
                 del self.active_tasks[task_id]
+            if task_id in self.cancelled_tasks:
+                self.cancelled_tasks.discard(task_id)
 
     async def cancel_task(self, task_id: str) -> bool:
         """Cancel a running task"""
         if task_id in self.active_tasks:
             self.active_tasks[task_id].cancel()
             self.cancelled_tasks.add(task_id)
+            clarification = self.clarification_futures.pop(task_id, None)
+            if clarification and not clarification.done():
+                clarification.cancel()
+            permission = self.permission_futures.pop(task_id, None)
+            if permission and not permission.done():
+                permission.set_result(False)
             await self._update_state(task_id, OrchestratorState.CANCELLED)
             return True
         return False
@@ -236,11 +245,17 @@ Current Role: {role_info}
         results = []
 
         for item in state["decomposed_tasks"]:
-            agent = [agent for agent in self.agents if agent.name == item['agent']][0]
+            agent = next((agent for agent in self.agents if agent.name == item.get("agent")), None)
+            if not agent:
+                state["workflow_status"] = "failed"
+                error_msg = f"Unknown agent requested: {item.get('agent')}"
+                state["errors"].append(error_msg)
+                state["execution_log"].append(error_msg)
+                break
             task = Task(
                 metadata={
                     "query": item["task_description"],
-                    "parent_task_id": item["dep"] or item['task_id'],
+                    "parent_task_id": item.get("dep") or item.get("task_id"),
                     "auth_token": state.get("auth_token"),
                     "base_url": state.get("base_url"),
                     "role_context": state.get("role_context"),
@@ -268,6 +283,9 @@ Current Role: {role_info}
 
     async def _synthesize_node(self, state: AgentWorkflowState) -> AgentWorkflowState:
         if state["workflow_status"] == "failed":
+            return state
+        if state["task_id"] in self.cancelled_tasks:
+            state["workflow_status"] = "cancelled"
             return state
 
         agent = ResponseGenerationAgent()
@@ -298,9 +316,10 @@ Current Role: {role_info}
                     break
                 if chunk.strip():
                     await self._emit_event("assistant_text_chunk", state["task_id"], {"text": chunk})
-                    await asyncio.sleep(0.05) # Small delay for smoother perceived streaming
+                    await asyncio.sleep(0.02) # Small delay for smoother perceived streaming
             
-            await self._emit_event("assistant_text_final", state["task_id"], {"text": full_text})
+            if state["task_id"] not in self.cancelled_tasks:
+                await self._emit_event("assistant_text_final", state["task_id"], {"text": full_text})
         else:
             state["errors"].append(response.error)
             state["workflow_status"] = "failed"

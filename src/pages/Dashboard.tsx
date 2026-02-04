@@ -110,11 +110,6 @@ const Dashboard = () => {
     const agentListener = AgentCommunication.onMessage((msg) => {
       try {
         const data = JSON.parse(msg);
-        // Handle TTS
-        if (data.type === 'agent_response' && data.result && data.result.tts_audio) {
-          const audio = new Audio(`data:audio/wav;base64,${data.result.tts_audio}`);
-          audio.play().catch(e => console.error("Audio playback failed", e));
-        }
         // Handle other notifications
         if (data.type === 'agent_response' && data.status === 'completed') {
           toast.success("Task Completed", { description: data.result.message || "Action finished." });

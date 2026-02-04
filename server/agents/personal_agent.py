@@ -35,16 +35,14 @@ from .role_context import AgentDeps, requires_permission, RiskTolerance, RoleCon
 logger = logging.getLogger(__name__)
 
 class PersonalAgent(BaseAgent):
-    def __init__(self):
+    def __init__(self,auth_token:str=None,server_url:str=None):
         super().__init__(
             agent_id="personal_agent",
             name="personal_agent",
             description="Manages personal organization: tasks, calendar, notes, and memory."
         )
-        # Use the custom model wrapper
-        import os
 
-        model = JarvisPydanticModel(model_name="qwen3:latest",auth_token=os.environ['OPENAI_API_KEY'])
+        model = JarvisPydanticModel(model_name="qwen3:latest",auth_token=auth_token,server_url=server_url)
         
         self.agent = Agent(
             model, 

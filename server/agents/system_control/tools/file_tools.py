@@ -1,7 +1,7 @@
 import os
 from .registry import register_tool
 
-@register_tool("read_file")
+@register_tool("read_file", description="Read a text file from disk.")
 def read_file(path: str) -> dict:
     try:
         if not os.path.exists(path):
@@ -13,7 +13,7 @@ def read_file(path: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@register_tool("write_file")
+@register_tool("write_file", description="Write text content to a file on disk.")
 def write_file(path: str, content: str) -> dict:
     try:
         # Ensure directory exists
@@ -25,7 +25,7 @@ def write_file(path: str, content: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@register_tool("delete_file")
+@register_tool("delete_file", description="Delete a file from disk.")
 def delete_file(path: str) -> dict:
     try:
         if not os.path.exists(path):

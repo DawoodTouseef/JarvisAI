@@ -11,9 +11,9 @@ CRITICAL: This adapter does NOT modify CentralOrchestrator itself.
 import asyncio
 import logging
 import json
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, Set
 from datetime import datetime
-from server.agents.orchestrator import CentralOrchestrator, OrchestratorState
+from server.agents.orchestrator import CentralOrchestrator
 
 
 logger = logging.getLogger(__name__)
@@ -44,11 +44,39 @@ class OrchestratorSession:
         self.orchestrator = CentralOrchestrator()
         self.active_task_id: Optional[str] = None
         self.is_connected = True
+        self._send_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+        self._send_task: Optional[asyncio.Task] = asyncio.create_task(self._send_loop())
+        self._background_tasks: Set[asyncio.Task] = set()
+        self._sent_final_for_task: Set[str] = set()
         
         # Set up event callback to translate orchestrator events
         self.orchestrator.set_event_callback(self._handle_orchestrator_event)
         
         logger.info(f"OrchestratorSession {session_id} created")
+
+    async def _send_loop(self):
+        """Background send loop to keep websocket sends non-blocking for orchestrator."""
+        try:
+            while self.is_connected:
+                message = await self._send_queue.get()
+                if not self.is_connected:
+                    break
+                try:
+                    if self.websocket_send:
+                        await self.websocket_send(message)
+                except Exception as e:
+                    logger.error(f"Error sending message to WebSocket: {e}")
+        except asyncio.CancelledError:
+            return
+
+    async def _enqueue_send(self, message: dict):
+        """Queue a message for websocket delivery."""
+        if not self.is_connected:
+            return
+        try:
+            self._send_queue.put_nowait(message)
+        except asyncio.QueueFull:
+            logger.warning(f"Send queue full for session {self.session_id}, dropping message")
     
     async def _handle_orchestrator_event(self, event_type: str, task_id: str, payload: Dict[str, Any]):
         """
@@ -106,8 +134,7 @@ class OrchestratorSession:
             "isListening": True,
             "timestamp": datetime.now().isoformat()
         }
-        if self.websocket_send:
-            await self.websocket_send(message)
+        await self._enqueue_send(message)
     
     async def _send_permission_required(self, task_id: str, payload: Dict[str, Any]):
         """Send system_permission_required message to frontend."""
@@ -121,8 +148,7 @@ class OrchestratorSession:
             },
             "timestamp": datetime.now().isoformat()
         }
-        if self.websocket_send:
-            await self.websocket_send(message)
+        await self._enqueue_send(message)
     
     async def _send_state_update(self, task_id: str, payload: Dict[str, Any]):
         """Send orchestrator_state_update message to frontend."""
@@ -134,8 +160,7 @@ class OrchestratorSession:
             },
             "timestamp": datetime.now().isoformat()
         }
-        if self.websocket_send:
-            await self.websocket_send(message)
+        await self._enqueue_send(message)
     
     async def _send_text_chunk(self, task_id: str, payload: Dict[str, Any]):
         """Send assistant_text_chunk message to frontend (streaming)."""
@@ -147,8 +172,7 @@ class OrchestratorSession:
             },
             "timestamp": datetime.now().isoformat()
         }
-        if self.websocket_send:
-            await self.websocket_send(message)
+        await self._enqueue_send(message)
     
     async def _send_assistant_response(self, task_id: str, payload: Dict[str, Any]):
         """Send assistant_response message to frontend."""
@@ -161,8 +185,8 @@ class OrchestratorSession:
             "use_tts": True,
             "timestamp": datetime.now().isoformat()
         }
-        if self.websocket_send:
-            await self.websocket_send(message)
+        await self._enqueue_send(message)
+        self._sent_final_for_task.add(task_id)
     
     async def _send_error(self, task_id: str, payload: Dict[str, Any]):
         """Send orchestrator_error message to frontend."""
@@ -174,10 +198,7 @@ class OrchestratorSession:
             },
             "timestamp": datetime.now().isoformat()
         }
-        if self.websocket_send:
-            await self.websocket_send(message)
-        else:
-            logger.warning(f"Session {self.session_id} disconnected, cannot send error: {payload}")
+        await self._enqueue_send(message)
 
     async def _send_system_agent_state(self, task_id: str, payload: Dict[str, Any]):
         """Send system agent state updates to frontend."""
@@ -189,8 +210,7 @@ class OrchestratorSession:
             },
             "timestamp": datetime.now().isoformat()
         }
-        if self.websocket_send:
-            await self.websocket_send(message)
+        await self._enqueue_send(message)
 
     async def _send_system_agent_event(self, task_id: str, payload: Dict[str, Any]):
         """Send system agent events to frontend."""
@@ -200,8 +220,7 @@ class OrchestratorSession:
             "payload": payload,
             "timestamp": datetime.now().isoformat()
         }
-        if self.websocket_send:
-            await self.websocket_send(message)
+        await self._enqueue_send(message)
     
     async def handle_user_query(self, text: str, auth_token: str, base_url: str, request_id: Optional[str] = None) -> str:
         """
@@ -216,6 +235,9 @@ class OrchestratorSession:
         Returns:
             task_id: ID of the created task
         """
+        if self.active_task_id:
+            await self.handle_interrupt(self.active_task_id)
+
         task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.session_id}"
         self.active_task_id = task_id
         
@@ -229,7 +251,9 @@ class OrchestratorSession:
         logger.info(f"Session {self.session_id}: Submitting task {task_id}")
         
         # Submit task asynchronously - orchestrator will emit events via callback
-        asyncio.create_task(self._execute_task(task_data))
+        task = asyncio.create_task(self._execute_task(task_data))
+        self._background_tasks.add(task)
+        task.add_done_callback(lambda t: self._background_tasks.discard(t))
         
         return task_id
     
@@ -240,14 +264,18 @@ class OrchestratorSession:
             status = result.get('workflow_status')
             logger.info(f"Task {task_data['id']} completed with status: {status}")
             logger.info(f"Task {task_data['id']} result: {result['processing_result']}")
-            # Send final response if available and task completed successfully
+            # Send final response if available and not already emitted
             processing_result = result.get('processing_result')
-            if status == 'completed' and processing_result:
-                await self._send_assistant_response(task_data['id'], {"text": processing_result})
+            if processing_result and task_data['id'] not in self._sent_final_for_task:
+                await self._send_assistant_response(task_data['id'], {"text": str(processing_result)})
                 
         except Exception as e:
             logger.exception(f"Task {task_data['id']} failed: {e}")
             await self._send_error(task_data['id'], {"message": str(e)})
+        finally:
+            if self.active_task_id == task_data["id"]:
+                self.active_task_id = None
+            self._sent_final_for_task.discard(task_data["id"])
     
     async def handle_clarification_response(self, task_id: str, response_text: str):
         """
@@ -311,6 +339,15 @@ class OrchestratorSession:
         # Cancel active task if any
         if self.active_task_id:
             await self.handle_cancel_task(self.active_task_id)
+
+        # Cancel background tasks
+        for task in list(self._background_tasks):
+            task.cancel()
+        self._background_tasks.clear()
+
+        # Stop send loop
+        if self._send_task:
+            self._send_task.cancel()
         
         # Clear references
         self.orchestrator = None

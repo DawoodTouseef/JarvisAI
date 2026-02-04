@@ -5,7 +5,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from .schemas import ActionIntent, PermissionLevel
 from .safety_validator import SafetyValidator
 from . import tools  # ensure tool registration
-from .tools.registry import _TOOL_REGISTRY
+from .tools.registry import _TOOL_REGISTRY, _TOOL_DESCRIPTIONS
 
 class IntentParser:
     """Parses natural language commands into structured ActionIntents."""
@@ -55,7 +55,8 @@ class IntentParser:
     async def _parse_with_llm(self, query: str) -> List[ActionIntent]:
         tools = self._describe_tools()
         tool_names = [tool["name"] for tool in tools]
-
+        tool_description = [tool['name'] for tool in _TOOL_DESCRIPTIONS]
+        tools_= "\n".join([f"-{i}:{j}" for i,j in zip(tool_name,tool_description)])
         system_prompt = (
             "You are a system-control intent parser. "
             "Return ONLY valid JSON with a list of steps. "
@@ -66,6 +67,8 @@ class IntentParser:
 Allowed tools (name and parameters):
 {json.dumps(tools, indent=2)}
 
+Available tools:
+{tools_}
 User request:
 {query}
 
@@ -130,7 +133,11 @@ Rules:
                     params.append(param_name)
             except (TypeError, ValueError):
                 params = []
-            tools.append({"name": name, "parameters": params})
+            tools.append({
+                "name": name,
+                "description": _TOOL_DESCRIPTIONS.get(name, ""),
+                "parameters": params,
+            })
         return tools
 
     def _determine_permission(self, tool_name: str, parameters: Dict[str, Any]) -> PermissionLevel:

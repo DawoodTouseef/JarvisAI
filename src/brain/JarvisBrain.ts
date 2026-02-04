@@ -1,8 +1,7 @@
 import { StateManager, useBrainState } from "./StateManager";
 import { TurnManager } from "./TurnManager";
-import { DialogueManager } from "./DialogueManager";
 import { AssistantState, BrainConfig, BrainStateData } from "./types";
-import { audioPlayer } from "../lib/StreamingAudioPlayer";
+import { ttsEngine } from "../lib/tts/SpeechSynthesisTTS";
 
 const DEFAULT_CONFIG: BrainConfig = {
     bargeInEnabled: true,
@@ -14,15 +13,15 @@ export class JarvisBrain {
 
     private stateManager: StateManager;
     private turnManager: TurnManager;
-    private dialogueManager: DialogueManager;
     private config: BrainConfig;
     private currentTaskId: string | null = null;
+    private hasChunkedText: boolean = false;
+    private shouldListenAfterTts: boolean = false;
 
     private constructor(config: BrainConfig = DEFAULT_CONFIG) {
         this.config = config;
         this.stateManager = new StateManager();
         this.turnManager = new TurnManager(config);
-        this.dialogueManager = new DialogueManager();
     }
 
     public static getInstance(): JarvisBrain {
@@ -43,6 +42,26 @@ export class JarvisBrain {
     public async initialize() {
         const { AgentCommunication } = await import("../lib/client_websocket");
 
+        ttsEngine.setCallbacks({
+            onStart: () => {
+                this.stateManager.transitionTo(AssistantState.SPEAKING);
+            },
+            onEnd: () => {
+                const currentState = this.stateManager.getCurrentState();
+                if (this.shouldListenAfterTts && (currentState === AssistantState.CLARIFICATION_REQUIRED || currentState === AssistantState.PAUSED)) {
+                    this.shouldListenAfterTts = false;
+                    this.stateManager.transitionTo(AssistantState.LISTENING);
+                    return;
+                }
+                if (currentState === AssistantState.SPEAKING) {
+                    this.stateManager.transitionTo(AssistantState.IDLE);
+                }
+            },
+            onError: (err) => {
+                console.error("[TTS] Error:", err);
+            }
+        });
+
         AgentCommunication.onMessage((msg) => {
             try {
                 const data = JSON.parse(msg);
@@ -61,10 +80,22 @@ export class JarvisBrain {
 
                     case "assistant_response":
                         if (payload.text) {
-                            console.log(payload)
+                            if (this.hasChunkedText) {
+                                ttsEngine.flush();
+                            } else {
+                                ttsEngine.speak(payload.text, { interrupt: true });
+                            }
                         }
+                        this.hasChunkedText = false;
                         this.currentTaskId = null;
                         this.stateManager.updateData({ taskId: null });
+                        break;
+
+                    case "assistant_text_chunk":
+                        if (payload.text) {
+                            this.hasChunkedText = true;
+                            ttsEngine.appendChunk(payload.text);
+                        }
                         break;
 
                     case "clarification_required":
@@ -73,6 +104,10 @@ export class JarvisBrain {
                                 question_text: payload.question_text
                             }
                         });
+                        if (payload.question_text) {
+                            this.shouldListenAfterTts = true;
+                            ttsEngine.speak(payload.question_text, { interrupt: true });
+                        }
                         // If it has "use_tts": true, audio should be streaming/playing.
                         // We will auto-transition to LISTENING after audio ends in handleUserSpeechStart/End logic
                         // But wait, if backend sends audio, we play it. 
@@ -91,9 +126,13 @@ export class JarvisBrain {
                                 risk_level: payload.risk_level
                             }
                         });
+                        if (payload.command_summary) {
+                            ttsEngine.speak(`Permission required. ${payload.command_summary}`, { interrupt: true });
+                        }
                         break;
 
                     case "orchestrator_error":
+                        ttsEngine.stop();
                         this.stateManager.transitionTo(AssistantState.IDLE);
                         this.currentTaskId = null;
                         this.stateManager.updateData({ taskId: null });
@@ -105,26 +144,19 @@ export class JarvisBrain {
             }
         });
 
-        // Binary listener for TTS playback
-        AgentCommunication.onBinary((chunk) => {
-            if (chunk instanceof ArrayBuffer) {
-                this.handleIncomingAudio(chunk);
-            }
-        });
-
-        // Setup AudioPlayer listener to know when speaking ends
+        // Setup audio listener to know when speaking ends
         // We can poll or add a callback if AudioPlayer supports it.
         // For now, relying on VAD to barge-in or manual state management.
     }
 
     public async handleUserSpeechStart() {
         const currentState = this.stateManager.getCurrentState();
-        const isAssistantSpeaking = currentState === AssistantState.SPEAKING || audioPlayer.isActive;
+        const isAssistantSpeaking = currentState === AssistantState.SPEAKING || ttsEngine.isSpeaking;
         const isAssistantThinking = currentState === AssistantState.THINKING;
 
         if (this.turnManager.shouldInterrupt(true, isAssistantSpeaking, isAssistantThinking)) {
             console.log("[Brain] Interruption detected! Stopping audio/processing.");
-            audioPlayer.stop();
+            ttsEngine.stop();
             this.stateManager.transitionTo(AssistantState.INTERRUPTED);
 
             // Send interrupt to backend
@@ -210,26 +242,11 @@ export class JarvisBrain {
         }
     }
 
-    public handleIncomingAudio(chunk: ArrayBuffer) {
-        const state = this.stateManager.getCurrentState();
-
-        // Ignore audio if we are interrupted or listening (Barge-in logic)
-        // If we are listening, we definitely don't want to play audio usually?
-        // Unless it's a sound effect. But for speech, no.
-        if (state === AssistantState.INTERRUPTED || state === AssistantState.LISTENING) {
-            return;
-        }
-
-        if (state !== AssistantState.SPEAKING) {
-            this.stateManager.transitionTo(AssistantState.SPEAKING);
-        }
-
-        audioPlayer.playChunk(chunk);
-    }
-
     // Internal Logic
     private async processQuery(text: string) {
         this.stateManager.transitionTo(AssistantState.THINKING);
+        this.hasChunkedText = false;
+        ttsEngine.stop();
 
         const requestId = `req_${Date.now()}`;
         const token = localStorage.getItem("jarvis:token") || "";
@@ -280,6 +297,11 @@ export class JarvisBrain {
                 this.stateManager.transitionTo(AssistantState.IDLE);
                 break;
             case "idle":
+                this.stateManager.transitionTo(AssistantState.IDLE);
+                break;
+            case "completed":
+            case "failed":
+            case "interrupted":
                 this.stateManager.transitionTo(AssistantState.IDLE);
                 break;
         }

@@ -67,7 +67,7 @@ class ResponseGenerationAgent(BaseAgent):
                 5. Ensure the response directly answers all parts of the original request.
                 6. If any part of the request failed, acknowledge it gracefully and offer assistance.
                 7. The response should feel like it's coming from one unified mind.
-                
+                8. Don't include any special character in it.
                 Unified Response:
                 """
             )

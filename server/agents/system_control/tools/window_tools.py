@@ -9,7 +9,7 @@ except ImportError:
     open_app_cmd = None
     close_app_cmd = None
 
-@register_tool("open_application")
+@register_tool("open_application", description="Open an application by name.")
 def open_application(app_name: str) -> dict:
     if not open_app_cmd:
         return {"error": "AppOpener not installed"}
@@ -21,7 +21,7 @@ def open_application(app_name: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@register_tool("focus_window")
+@register_tool("focus_window", description="Focus an application window by title.")
 def focus_window(app_name: str) -> dict:
     if not gw:
         return {"error": "pygetwindow not installed"}
@@ -35,7 +35,7 @@ def focus_window(app_name: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@register_tool("close_application")
+@register_tool("close_application", description="Close an application by name.")
 def close_application(app_name: str) -> dict:
     if not close_app_cmd:
         return {"error": "AppOpener not installed"}

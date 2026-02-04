@@ -60,7 +60,6 @@ export const AudioSpectrum = () => {
   const transcriptions = useTranscriptionStore((s) => s.text);
   const setTranscription = useTranscriptionStore((s) => s.setText);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [agentResponse, setAgentResponse] = useState<any>(null);
   const isSpeaking = useSpeakingStore((s) => s.isSpeaking);
   const setIsSpeaking = useSpeakingStore((s) => s.setText);
 
@@ -424,18 +423,6 @@ export const AudioSpectrum = () => {
     }
   }, [brainState]);
 
-  // Subscribe to binary messages (TTS audio)
-  useEffect(() => {
-    const offBinary = AgentCommunication.onBinary((data) => {
-      if (data instanceof ArrayBuffer) {
-        brain.handleIncomingAudio(data);
-      } else if (data instanceof Blob) {
-        data.arrayBuffer().then(b => brain.handleIncomingAudio(b));
-      }
-    });
-    return () => { offBinary(); };
-  }, []);
-
   // Listen for real-time events for dialogs
   useEffect(() => {
     const offMsg = AgentCommunication.onMessage((msg) => {
@@ -469,10 +456,10 @@ export const AudioSpectrum = () => {
   const handleClarificationResponse = (response: string) => {
     if (clarificationReq) {
       AgentCommunication.sendJSON({
-        type: "agent_clarification_response",
+        type: "clarification_response",
         payload: {
           task_id: clarificationReq.task_id,
-          response: response
+          text: response
         }
       });
     }
@@ -481,10 +468,10 @@ export const AudioSpectrum = () => {
   const handlePermissionResponse = (approved: boolean) => {
     if (permissionReq) {
       AgentCommunication.sendJSON({
-        type: "system_permission_response",
+        type: "permission_response",
         payload: {
           task_id: permissionReq.task_id,
-          response: approved ? "approved" : "denied"
+          approved: approved
         }
       });
     }
@@ -516,24 +503,6 @@ export const AudioSpectrum = () => {
       >
         <ListeningAnimation isTranscribing={isTranscribing} isListening={isListening} />
       </motion.div>
-
-      {agentResponse && (
-        <motion.div
-          className="mt-4 p-3 bg-jarvis-dark/50 border border-jarvis-cyan/30 rounded-lg max-w-xs text-center text-sm"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0 }}
-        >
-          <div className="font-medium text-primary">Agent Response:</div>
-          <div className="text-muted-foreground truncate">
-            {agentResponse.status === 'completed' && agentResponse.result?.summary
-              ? agentResponse.result.summary.substring(0, 100) + (agentResponse.result.summary.length > 100 ? '...' : '')
-              : agentResponse.status === 'failed' && agentResponse.error
-                ? `Error: ${agentResponse.error.substring(0, 100)}${agentResponse.error.length > 100 ? '...' : ''}`
-                : 'Processing...'}
-          </div>
-        </motion.div>
-      )}
 
       {/* Clarification Dialog */}
       {clarificationReq && (

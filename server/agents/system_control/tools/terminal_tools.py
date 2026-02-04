@@ -63,7 +63,7 @@ def _load_list_from_env(env_var: str) -> set:
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
-@register_tool("run_shell")
+@register_tool("run_shell", description="Run a shell command on the system.")
 def run_shell(
     command: str,
     cwd: Optional[str] = None,
