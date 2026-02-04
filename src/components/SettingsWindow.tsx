@@ -69,7 +69,7 @@ export const SettingsWindow = ({
   const [isEventsOpen, setIsEventsOpen] = useState(false);
   const [isEditEventOpen, setIsEditEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
-  const [isFaceRecognitionOpen, setIsFaceRecognitionOpen] = useState(true);
+  const [isFaceRecognitionOpen, setIsFaceRecognitionOpen] = useState(false);
   // Confirmation dialog states
   const [confirmDelete, setConfirmDelete] = useState<{open: boolean, eventId: string | null}>({open: false, eventId: null});
   const [confirmUpdate, setConfirmUpdate] = useState<{open: boolean}>({open: false});

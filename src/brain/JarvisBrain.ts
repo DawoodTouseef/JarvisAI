@@ -1,7 +1,7 @@
 import { StateManager, useBrainState } from "./StateManager";
 import { TurnManager } from "./TurnManager";
 import { AssistantState, BrainConfig, BrainStateData } from "./types";
-import { ttsEngine } from "../lib/tts/SpeechSynthesisTTS";
+import { ttsEngine } from "../lib/tts/TtsManager";
 
 const DEFAULT_CONFIG: BrainConfig = {
     bargeInEnabled: true,
@@ -15,7 +15,6 @@ export class JarvisBrain {
     private turnManager: TurnManager;
     private config: BrainConfig;
     private currentTaskId: string | null = null;
-    private hasChunkedText: boolean = false;
     private shouldListenAfterTts: boolean = false;
 
     private constructor(config: BrainConfig = DEFAULT_CONFIG) {
@@ -42,7 +41,7 @@ export class JarvisBrain {
     public async initialize() {
         const { AgentCommunication } = await import("../lib/client_websocket");
 
-        ttsEngine.setCallbacks({
+        ttsEngine.addCallbacks({
             onStart: () => {
                 this.stateManager.transitionTo(AssistantState.SPEAKING);
             },
@@ -80,21 +79,15 @@ export class JarvisBrain {
 
                     case "assistant_response":
                         if (payload.text) {
-                            if (this.hasChunkedText) {
-                                ttsEngine.flush();
-                            } else {
-                                ttsEngine.speak(payload.text, { interrupt: true });
-                            }
+                            ttsEngine.handleFinal(task_id || this.currentTaskId, payload.text);
                         }
-                        this.hasChunkedText = false;
                         this.currentTaskId = null;
                         this.stateManager.updateData({ taskId: null });
                         break;
 
                     case "assistant_text_chunk":
                         if (payload.text) {
-                            this.hasChunkedText = true;
-                            ttsEngine.appendChunk(payload.text);
+                            ttsEngine.handleChunk(task_id || this.currentTaskId, payload.text);
                         }
                         break;
 
@@ -123,11 +116,43 @@ export class JarvisBrain {
                             permission: {
                                 command_summary: payload.command_summary,
                                 exact_operation: payload.exact_operation,
-                                risk_level: payload.risk_level
+                                risk_level: payload.risk_level,
+                                source: "system"
                             }
                         });
                         if (payload.command_summary) {
                             ttsEngine.speak(`Permission required. ${payload.command_summary}`, { interrupt: true });
+                        }
+                        break;
+
+                    case "autonomous_task_started":
+                        if (payload?.query) {
+                            ttsEngine.speak(`Starting: ${payload.query}`, { interrupt: true });
+                        }
+                        break;
+
+                    case "autonomous_task_notice":
+                        if (payload?.query) {
+                            ttsEngine.speak(`Heads up: ${payload.query}`, { interrupt: true });
+                        }
+                        break;
+
+                    case "autonomous_task_result":
+                        break;
+
+                    case "autonomous_permission_required":
+                        this.stateManager.transitionTo(AssistantState.PERMISSION_REQUIRED, {
+                            permission: {
+                                command_summary: payload.query || "Autonomous action requested",
+                                exact_operation: payload.query || "",
+                                risk_level: payload.risk_level || "unknown",
+                                request_id: payload.request_id,
+                                source: "autonomous",
+                                query: payload.query
+                            }
+                        });
+                        if (payload?.query) {
+                            ttsEngine.speak(`Permission required. ${payload.query}`, { interrupt: true });
                         }
                         break;
 
@@ -136,6 +161,17 @@ export class JarvisBrain {
                         this.stateManager.transitionTo(AssistantState.IDLE);
                         this.currentTaskId = null;
                         this.stateManager.updateData({ taskId: null });
+                        break;
+
+                    case "reminder_triggered":
+                    case "alarm_triggered":
+                        if (payload?.text) {
+                            ttsEngine.speak(payload.text, { interrupt: true });
+                        } else if (payload?.label) {
+                            ttsEngine.speak(payload.label, { interrupt: true });
+                        } else {
+                            ttsEngine.speak("Reminder triggered.", { interrupt: true });
+                        }
                         break;
                 }
 
@@ -221,13 +257,23 @@ export class JarvisBrain {
         const data = this.stateManager.getData();
         if (data.taskId) {
             const { AgentCommunication } = await import("../lib/client_websocket");
-            AgentCommunication.sendJSON({
-                type: "permission_response",
-                payload: {
-                    task_id: data.taskId,
-                    approved: approved
-                }
-            });
+            if (data.permission?.source === "autonomous" && data.permission?.request_id) {
+                AgentCommunication.sendJSON({
+                    type: "autonomous_permission_response",
+                    payload: {
+                        request_id: data.permission.request_id,
+                        approved: approved
+                    }
+                });
+            } else {
+                AgentCommunication.sendJSON({
+                    type: "permission_response",
+                    payload: {
+                        task_id: data.taskId,
+                        approved: approved
+                    }
+                });
+            }
             // Clear permission data and transition to thinking
             this.stateManager.updateData({ permission: null });
             this.stateManager.transitionTo(AssistantState.THINKING);
@@ -245,7 +291,6 @@ export class JarvisBrain {
     // Internal Logic
     private async processQuery(text: string) {
         this.stateManager.transitionTo(AssistantState.THINKING);
-        this.hasChunkedText = false;
         ttsEngine.stop();
 
         const requestId = `req_${Date.now()}`;

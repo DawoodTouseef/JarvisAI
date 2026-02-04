@@ -136,12 +136,16 @@ class GeneralPurposeAgent(BaseAgent):
     async def _reasoning_layer(self, llm: Any, profile: Dict, history: List[Dict]) -> ReasoningStep:
         """Determines the next step using LLM"""
         tools_desc = json.dumps(tool_registry.get_tool_definitions(), indent=2)
+        role_hint = self._infer_role_style(profile.get("query", ""))
         
         system_prompt = f"""
 You are the Jarvis General-Purpose Agent. You solve complex tasks by reasoning and using tools.
 
 AVAILABLE TOOLS:
 {tools_desc}
+
+ROLE ADAPTATION:
+{role_hint}
 
 GUIDELINES:
 1. Reason step-by-step.
@@ -186,6 +190,18 @@ RETURN JSON ONLY in this format:
         except Exception as e:
             logger.error(f"Reasoning layer error: {e}")
             return ReasoningStep(thought="Error in reasoning", action="final_response", response="I encountered an error while thinking about this task.")
+
+    def _infer_role_style(self, query: str) -> str:
+        q = query.lower()
+        if any(k in q for k in ["explain", "teach", "lesson", "learn"]):
+            return "Use a teaching tone: step-by-step, patient, and illustrative."
+        if any(k in q for k in ["bug", "error", "stack trace", "compile", "debug", "code"]):
+            return "Use a developer tone: precise, technical, and include actionable steps."
+        if any(k in q for k in ["analyze", "compare", "study", "research"]):
+            return "Use a researcher tone: structured, evidence-seeking, and cautious about assumptions."
+        if any(k in q for k in ["kid", "child", "parent", "family"]):
+            return "Use a supportive, gentle parenting tone with clear guidance."
+        return "Use a professional, concise assistant tone."
 
     async def _execute_layer(self, tool_name: str, tool_input: Dict, task_id: str) -> Any:
         """Executes the chosen tool safely"""

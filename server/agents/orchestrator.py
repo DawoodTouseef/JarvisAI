@@ -34,10 +34,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from .deep_search_agent import DeepSearchAgent
 from .response_generation_agent import ResponseGenerationAgent
 from .general_purpose_agent import GeneralPurposeAgent
-from .personal_agent import PersonalAgent
 from .base_agent import BaseAgent, Task
 from .tools.agent_clarification import agent_clarification_tool
-
+from .local_execution_agent import LocalExecutionChatbotAgent
 
 
 from .system_agent_wrapper import SystemAgentWrapper
@@ -126,6 +125,15 @@ class CentralOrchestrator:
         os.environ['OPENAI_API_KEY'] = task_data.get("auth_token")
         os.environ['OPENAI_API_BASE'] = task_data.get("base_url")
         self.agents.append(PersonalAgent(auth_token=task_data.get("auth_token"),server_url=task_data.get("base_url")))
+
+
+        try:
+            local_agent = LocalExecutionChatbotAgent()
+            local_agent.set_event_callback(self._emit_event)
+            self.agents.append(local_agent)
+        except Exception as exc:
+            logger.exception("Failed to register Local Execution Chatbot Agent: %s", exc)
+
         state: AgentWorkflowState = {
             "original_input": task_data["query"],
             "decomposed_tasks": [],

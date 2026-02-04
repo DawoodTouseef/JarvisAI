@@ -160,3 +160,14 @@ registry.register_tool(WebSearchTool())
 registry.register_tool(CalculatorTool())
 registry.register_tool(FileIOTool())
 registry.register_tool(KnowledgeLookupTool())
+
+# Optional tool extensions (vision/context)
+try:
+    from .vision_tools import VisionAnalyzeTool
+    from .context_tools import SystemContextTool, SessionContextTool
+
+    registry.register_tool(VisionAnalyzeTool())
+    registry.register_tool(SystemContextTool())
+    registry.register_tool(SessionContextTool())
+except Exception as exc:
+    logger.warning("Optional tools not registered: %s", exc)

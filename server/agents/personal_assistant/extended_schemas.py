@@ -40,6 +40,25 @@ class AlarmSchema(BaseModel):
     enabled: bool
     created_at: datetime
 
+# Reminder Schemas
+class RecurrenceRule(BaseModel):
+    type: str = Field("none", description="none, daily, weekly")
+    interval: int = Field(1, description="Interval for recurrence")
+    days_of_week: Optional[List[str]] = Field(None, description="Days for weekly recurrence")
+
+class ReminderCreate(BaseModel):
+    text: str = Field(..., description="Reminder text")
+    trigger_at: datetime = Field(..., description="When to trigger the reminder (ISO datetime)")
+    label: Optional[str] = Field(None, description="Optional label for the reminder")
+    recurrence: Optional[RecurrenceRule] = Field(None, description="Optional recurrence rule")
+
+class ReminderUpdate(BaseModel):
+    id: str = Field(..., description="Reminder ID")
+    text: Optional[str] = None
+    trigger_at: Optional[datetime] = None
+    label: Optional[str] = None
+    recurrence: Optional[RecurrenceRule] = None
+
 # Shopping List Schemas
 class ShoppingListCreate(BaseModel):
     name: str = Field(..., description="Name of the shopping list")

@@ -31,6 +31,7 @@ from server.config import jarvis_cache
 
 from server.database.database import engine, Base
 from server.database.models import *  # Import models so they register with Base
+from server.services.reminder_service import get_reminder_agent
 
 
 JARVIS_DIR = Path(__file__).resolve().parent
@@ -48,10 +49,16 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up JARVIS backend...")
     logger.info("Initializing database tables...")
     Base.metadata.create_all(bind=engine)
+    reminder_agent = get_reminder_agent()
+    await reminder_agent.start()
+    app.state.reminder_agent = reminder_agent
     yield
     # Shutdown logic
     logger.info("Shutting down JARVIS backend...")
     try:
+        reminder_agent = getattr(app.state, "reminder_agent", None)
+        if reminder_agent:
+            await reminder_agent.stop()
         settings_manager.close()
         # Also close the task manager's database
     except Exception as e:
@@ -536,6 +543,18 @@ async def voice_assistant_websocket(websocket: WebSocket):
         session_id=f"ws_{id(websocket)}",
         websocket_send_callback=send_to_websocket
     )
+
+    reminder_agent = getattr(app.state, "reminder_agent", None)
+    reminder_callback = None
+    if reminder_agent:
+        async def reminder_callback(event_type: str, task_id: str, payload: dict):
+            await session.handle_external_event(event_type, task_id, payload)
+
+        reminder_agent.add_event_callback(reminder_callback)
+        async def submit_autonomous_query(text: str, meta: dict):
+            return await session.submit_autonomous_query(text)
+
+        reminder_agent.set_submit_query_callback(submit_autonomous_query)
     
     try:
         while True:
@@ -572,7 +591,12 @@ async def voice_assistant_websocket(websocket: WebSocket):
                             "timestamp": datetime.now().isoformat()
                         })
                     else:
-                        raise ValueError("Query text is required")
+                        send_to_websocket({
+                            "type": "assistant_text_final",
+                            "task_id": task_id,
+                            "request_id": parsed_data.get("request_id"),
+                            "timestamp": datetime.now().isoformat()
+                        })
                 
                 elif message_type == "clarification_response":
                     # Handle clarification response
@@ -593,6 +617,40 @@ async def voice_assistant_websocket(websocket: WebSocket):
                         await session.handle_permission_response(task_id, approved)
                     else:
                         raise ValueError("task_id is required")
+                
+                elif message_type == "vision_input":
+                    # Handle incoming vision input (image bytes follow JSON)
+                    metadata = payload or {}
+                    image_bytes = await websocket.receive_bytes()
+                    stored = await session.store_vision_input(image_bytes, metadata)
+                    await send_to_websocket({
+                        "type": "vision_input_ack",
+                        "task_id": session.active_task_id,
+                        "payload": {"stored": stored},
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+                elif message_type == "screen_context":
+                    # Store screen text/context without an image
+                    text = payload.get("text", "")
+                    meta = payload.get("metadata", {})
+                    from server.services.context.context_store import ContextStore
+                    stored = ContextStore.set_screen_text(session.session_id, text, meta)
+                    await send_to_websocket({
+                        "type": "screen_context_ack",
+                        "task_id": session.active_task_id,
+                        "payload": {"stored": stored},
+                        "timestamp": datetime.now().isoformat()
+                    })
+
+                elif message_type == "autonomous_permission_response":
+                    # Handle autonomous permission response
+                    request_id = payload.get("request_id")
+                    approved = payload.get("approved", False)
+                    if request_id and reminder_agent:
+                        reminder_agent.resolve_permission(request_id, approved)
+                    else:
+                        raise ValueError("request_id is required")
                 
                 elif message_type == "interrupt":
                     # Handle interrupt
@@ -635,6 +693,9 @@ async def voice_assistant_websocket(websocket: WebSocket):
         logger.error(f"Voice Assistant WebSocket error: {e}")
     finally:
         # Clean up session
+        if reminder_agent and reminder_callback:
+            reminder_agent.remove_event_callback(reminder_callback)
+            reminder_agent.clear_submit_query_callback()
         await session.disconnect()
         manager.disconnect(websocket)
         logger.info("Voice Assistant session cleaned up")

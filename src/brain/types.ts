@@ -23,6 +23,9 @@ export interface PermissionPayload {
     command_summary: string;
     exact_operation: string;
     risk_level: string;
+    request_id?: string;
+    source?: "system" | "autonomous";
+    query?: string;
 }
 
 export interface BrainStateData {

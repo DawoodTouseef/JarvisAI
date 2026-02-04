@@ -50,7 +50,10 @@ class DeepSearchAgent(BaseAgent):
         )
         self.web_search = DuckDuckGoSearchRun()
         self.arxiv_search = ArxivQueryRun()
-        
+        from pathlib import Path
+        from os.path import join as pathjoin,exists as pathexists
+        cache_dir = Path().home()
+        jarvis_cache = pathjoin(cache_dir,".jarvis")
         # Initialize mem0 Memory (optional)
         mem_config = {
             "llm": {
@@ -69,8 +72,8 @@ class DeepSearchAgent(BaseAgent):
             "vector_store": {
                 "provider": "chroma",
                 "config": {
-                    "collection_name": "test",
-                    "path": "memory",
+                    "collection_name": "jarvis",
+                    "path": pathjoin(jarvis_cache,"memory"),
                 }
             }
         }

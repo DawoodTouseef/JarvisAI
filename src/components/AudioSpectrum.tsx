@@ -4,13 +4,25 @@ import { Mic, MicOff } from "lucide-react";
 import { JarvisButton } from "@/components/ui/JarvisButton";
 import { toast } from "sonner";
 import { useTranscriptionStore } from "@/stores/transcription";
-import { Communication, AgentCommunication, WakeWordCommunication } from '@/lib/client_websocket';
+import { AgentCommunication, WakeWordCommunication } from '@/lib/client_websocket';
 import { brain, AssistantState, useBrainState } from '@/brain';
 import { useSpeakingStore } from "@/stores/speaking";
+import { ttsEngine } from "@/lib/tts/TtsManager";
 
-const ListeningAnimation = ({ isTranscribing, isListening }: { isTranscribing: boolean; isListening: boolean; }) => {
-  let isSpeaking = useSpeakingStore((s) => s.isSpeaking);
-  const text = isTranscribing ? "TRANSCRIBING..." : isSpeaking ? "SPEAKING..." : isListening ? "LISTENING..." : "AWAITING VOICE COMMAND";
+type VoiceState = "IDLE" | "LISTENING" | "PROCESSING" | "SPEAKING" | "RESET";
+
+const ListeningAnimation = ({ isTranscribing, voiceState }: { isTranscribing: boolean; voiceState: VoiceState; }) => {
+  const text = isTranscribing
+    ? "TRANSCRIBING..."
+    : voiceState === "SPEAKING"
+      ? "SPEAKING..."
+      : voiceState === "LISTENING"
+        ? "LISTENING..."
+        : voiceState === "PROCESSING"
+          ? "PROCESSING..."
+          : voiceState === "RESET"
+            ? "RESETTING..."
+            : "AWAITING VOICE COMMAND";
 
   const chars = text.split('  ');
 
@@ -23,6 +35,8 @@ const ListeningAnimation = ({ isTranscribing, isListening }: { isTranscribing: b
     hidden: { opacity: 0, y: 6 },
     visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 400, damping: 24 } },
   } as const;
+
+  const isListening = voiceState === "LISTENING";
 
   return (
     <motion.p
@@ -44,12 +58,21 @@ const ListeningAnimation = ({ isTranscribing, isListening }: { isTranscribing: b
 }
 export const AudioSpectrum = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const scriptNodeRef = useRef<ScriptProcessorNode | null>(null);
   const animationRef = useRef<number>();
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const [isListening, setIsListening] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceState>("IDLE");
+  const voiceStateRef = useRef<VoiceState>("IDLE");
+  const wakeWordEnabledRef = useRef(true);
+  const vadEnabledRef = useRef(true);
+  const resetInProgressRef = useRef(false);
+  const skipTranscriptionRef = useRef(false);
+  const bargeInRef = useRef(false);
   const chunksRef = useRef<Blob[]>([]);
   const url = localStorage.getItem('jarvis:selectedServer') || '';
 
@@ -60,12 +83,31 @@ export const AudioSpectrum = () => {
   const transcriptions = useTranscriptionStore((s) => s.text);
   const setTranscription = useTranscriptionStore((s) => s.setText);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const isSpeaking = useSpeakingStore((s) => s.isSpeaking);
-  const setIsSpeaking = useSpeakingStore((s) => s.setText);
+  const setIsUserSpeaking = useSpeakingStore((s) => s.setText);
+  const isListening = voiceState === "LISTENING";
 
   // New state for dialogs
   const [clarificationReq, setClarificationReq] = useState<{ task_id: string, question: string } | null>(null);
   const [permissionReq, setPermissionReq] = useState<{ task_id: string, summary: string, operation: string, risk: string } | null>(null);
+
+  const transitionTo = useCallback((next: VoiceState, reason?: string) => {
+    const current = voiceStateRef.current;
+    if (current === next) return;
+    const allowed: Record<VoiceState, VoiceState[]> = {
+      IDLE: ["LISTENING", "RESET"],
+      LISTENING: ["PROCESSING", "SPEAKING", "RESET"],
+      PROCESSING: ["SPEAKING", "RESET", "IDLE", "LISTENING"],
+      SPEAKING: ["RESET", "LISTENING"],
+      RESET: ["IDLE", "LISTENING"]
+    };
+
+    if (!allowed[current].includes(next)) {
+      console.warn(`[VoiceState] Invalid transition ${current} -> ${next}${reason ? ` (${reason})` : ""}`);
+    }
+
+    voiceStateRef.current = next;
+    setVoiceState(next);
+  }, []);
 
   const drawSpectrum = useCallback(() => {
     const canvas = canvasRef.current;
@@ -79,7 +121,7 @@ export const AudioSpectrum = () => {
     const radius = Math.min(centerX, centerY) * 0.6;
 
     // Clear with fade effect for trails
-    ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
+    ctx.fillStyle = "transparent";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const bars = 128; // Increased resolution
@@ -88,8 +130,8 @@ export const AudioSpectrum = () => {
     // Get State
     const brainState = brain.getState();
     const isThinking = brainState === AssistantState.THINKING;
-    const isSpeakingState = brainState === AssistantState.SPEAKING || isSpeaking;
-    const isListeningState = isListening || brainState === AssistantState.LISTENING;
+    const isSpeakingState = voiceState === "SPEAKING";
+    const isListeningState = voiceState === "LISTENING";
 
     if (analyser && (isListeningState || isSpeakingState)) {
       analyser.fftSize = 512; // Higher FFT size for better resolution
@@ -187,47 +229,14 @@ export const AudioSpectrum = () => {
     ctx.fill();
 
     animationRef.current = requestAnimationFrame(drawSpectrum);
-  }, [analyser, isListening, isSpeaking, wakeStatus]);
+  }, [analyser, voiceState, wakeStatus]);
 
   useEffect(() => {
-    let raf = 0;
-    let lastActive = 0;
-    const silenceTimeout = 1200; // ms of silence to consider speech ended
-
-    const loop = async () => {
-      const a = analyser;
-      if (a && isListening) {
-        const buffer = new Uint8Array(a.fftSize);
-        a.getByteTimeDomainData(buffer);
-        let sum = 0;
-        for (let i = 0; i < buffer.length; i++) {
-          const v = (buffer[i] - 128) / 128;
-          sum += v * v;
-        }
-        const rms = Math.sqrt(sum / buffer.length);
-        const userIsSpeaking = rms > 0.02; // threshold
-
-        if (userIsSpeaking) {
-          lastActive = Date.now();
-          if (!isSpeaking) setIsSpeaking(true);
-        } else {
-          if (isSpeaking && Date.now() - lastActive > silenceTimeout) {
-            setIsSpeaking(false);
-            stopListening();
-          }
-        }
-      }
-      raf = requestAnimationFrame(loop);
-    };
-
-    if (isListening && analyser) {
-      raf = requestAnimationFrame(loop);
-    }
-
+    animationRef.current = requestAnimationFrame(drawSpectrum);
     return () => {
-      if (raf) cancelAnimationFrame(raf);
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
-  }, [isListening, analyser, isSpeaking]);
+  }, [drawSpectrum]);
 
   /*
    * Brain Integration: Transcription Logic
@@ -281,16 +290,110 @@ export const AudioSpectrum = () => {
     }
   };
 
+  const teardownMicPipeline = useCallback(async () => {
+    try {
+      const mr = mediaRecorderRef.current;
+      if (mr && mr.state === "recording") {
+        skipTranscriptionRef.current = true;
+        mr.stop();
+      }
+      mediaRecorderRef.current = null;
+
+      if (scriptNodeRef.current) {
+        scriptNodeRef.current.onaudioprocess = null;
+        scriptNodeRef.current.disconnect();
+        scriptNodeRef.current = null;
+      }
+
+      if (sourceRef.current) {
+        sourceRef.current.disconnect();
+        sourceRef.current = null;
+      }
+
+      if (analyserRef.current) {
+        analyserRef.current.disconnect();
+        analyserRef.current = null;
+        setAnalyser(null);
+      }
+
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+
+      if (audioContextRef.current) {
+        try {
+          await audioContextRef.current.close();
+        } catch (err) {
+          console.warn("AudioContext close failed:", err);
+        }
+        audioContextRef.current = null;
+      }
+    } catch (err) {
+      console.warn("Mic teardown failed:", err);
+    }
+  }, []);
+
+  const initMicPipeline = useCallback(async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    streamRef.current = stream;
+
+    const ctx = new AudioContext();
+    audioContextRef.current = ctx;
+
+    const anl = ctx.createAnalyser();
+    anl.fftSize = 256;
+    analyserRef.current = anl;
+    setAnalyser(anl);
+
+    const source = ctx.createMediaStreamSource(stream);
+    sourceRef.current = source;
+    source.connect(anl);
+
+    const downsample = (pcm: Float32Array, inRate: number) => {
+      const outRate = 16000;
+      const ratio = inRate / outRate;
+      const newLen = Math.round(pcm.length / ratio);
+      const out = new Int16Array(newLen);
+      for (let i = 0; i < newLen; i++) {
+        const idx = Math.round(i * ratio);
+        let s = Math.max(-1, Math.min(1, pcm[idx]));
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      return out;
+    };
+
+    const scriptNode = ctx.createScriptProcessor(4096, 1, 1);
+    scriptNodeRef.current = scriptNode;
+    scriptNode.onaudioprocess = (e) => {
+      if (!wakeWordEnabledRef.current) return;
+      if (voiceStateRef.current !== "IDLE") return;
+      const input = e.inputBuffer.getChannelData(0);
+      const pcm16 = downsample(input, ctx.sampleRate);
+      WakeWordCommunication.sendBytes(pcm16.buffer);
+    };
+
+    source.connect(scriptNode);
+    scriptNode.connect(ctx.destination);
+  }, []);
+
+  const restartMicPipeline = useCallback(async () => {
+    await teardownMicPipeline();
+    await initMicPipeline();
+  }, [initMicPipeline, teardownMicPipeline]);
+
+  const ensureMicPipeline = useCallback(async () => {
+    if (!streamRef.current || !audioContextRef.current) {
+      await initMicPipeline();
+    }
+    if (audioContextRef.current?.state === "suspended") {
+      await audioContextRef.current.resume();
+    }
+  }, [initMicPipeline]);
+
   const startListening = useCallback(async () => {
     try {
-      if (!audioContext) {
-        const context = new AudioContext();
-        setAudioContext(context);
-        return;
-      }
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-      }
+      await ensureMicPipeline();
 
       // Reset chunks for new recording
       chunksRef.current = [];
@@ -302,7 +405,9 @@ export const AudioSpectrum = () => {
           if (e.data.size > 0) chunksRef.current.push(e.data);
         };
         mr.onstop = () => {
-          if (chunksRef.current.length > 0) {
+          const skip = skipTranscriptionRef.current;
+          skipTranscriptionRef.current = false;
+          if (!skip && chunksRef.current.length > 0) {
             const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
             transcription(blob);
           }
@@ -311,16 +416,22 @@ export const AudioSpectrum = () => {
         mr.start();
       }
 
-      brain.handleUserSpeechStart();
-      setIsListening(true);
+      transitionTo("LISTENING", "start-listening");
     } catch (error) {
       console.error("Error starting listening:", error);
     }
-  }, [audioContext, transcription]);
+  }, [ensureMicPipeline, transcription, transitionTo]);
 
-  const stopListening = useCallback(() => {
-    setIsListening(false);
-    setIsSpeaking(false);
+  const stopListening = useCallback((options?: { skipTranscription?: boolean; nextState?: VoiceState }) => {
+    if (options?.skipTranscription) {
+      skipTranscriptionRef.current = true;
+    }
+    if (options?.nextState) {
+      transitionTo(options.nextState, "stop-listening");
+    } else if (voiceStateRef.current === "LISTENING") {
+      transitionTo("PROCESSING", "stop-listening");
+    }
+    setIsUserSpeaking(false);
 
     const mr = mediaRecorderRef.current;
     if (mr && mr.state === 'recording') {
@@ -328,19 +439,135 @@ export const AudioSpectrum = () => {
     }
 
     // Note: No longer sending agent_stt_end as we use blob transcription
-  }, []);
+  }, [transitionTo, setIsUserSpeaking]);
+
+  const resetAudioPipeline = useCallback(async (nextState: VoiceState = "IDLE") => {
+    if (resetInProgressRef.current) return;
+    resetInProgressRef.current = true;
+
+    transitionTo("RESET", "audio-reset");
+    wakeWordEnabledRef.current = true;
+    vadEnabledRef.current = true;
+    setWakeStatus("AWAITING WAKE WORD");
+
+    stopListening({ skipTranscription: true, nextState: "RESET" });
+    ttsEngine.stop();
+
+    await restartMicPipeline();
+
+    if (audioContextRef.current?.state === "suspended") {
+      await audioContextRef.current.resume();
+    }
+
+    transitionTo(nextState, "audio-reset-complete");
+    resetInProgressRef.current = false;
+  }, [restartMicPipeline, stopListening, transitionTo]);
+
+  const handleBargeIn = useCallback(async () => {
+    if (bargeInRef.current) return;
+    bargeInRef.current = true;
+    try {
+      ttsEngine.stop();
+      await brain.handleUserSpeechStart();
+      await resetAudioPipeline("LISTENING");
+      await startListening();
+    } catch (err) {
+      console.error("Barge-in failed:", err);
+    } finally {
+      bargeInRef.current = false;
+    }
+  }, [resetAudioPipeline, startListening]);
+
+  useEffect(() => {
+    let raf = 0;
+    let lastActive = 0;
+    let wasSpeaking = false;
+    const silenceTimeout = 1200; // ms of silence to consider speech ended
+
+    const loop = () => {
+      const a = analyserRef.current;
+      if (a && vadEnabledRef.current) {
+        const buffer = new Uint8Array(a.fftSize);
+        a.getByteTimeDomainData(buffer);
+        let sum = 0;
+        for (let i = 0; i < buffer.length; i++) {
+          const v = (buffer[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buffer.length);
+        const userIsSpeaking = rms > 0.02; // threshold
+
+        if (userIsSpeaking) {
+          lastActive = Date.now();
+          if (!wasSpeaking) {
+            wasSpeaking = true;
+            setIsUserSpeaking(true);
+
+            if (voiceStateRef.current === "SPEAKING") {
+              void handleBargeIn();
+            } else if (voiceStateRef.current === "LISTENING") {
+              void brain.handleUserSpeechStart();
+            }
+          }
+        } else if (wasSpeaking && Date.now() - lastActive > silenceTimeout) {
+          wasSpeaking = false;
+          setIsUserSpeaking(false);
+          if (voiceStateRef.current === "LISTENING") {
+            stopListening();
+          }
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+
+    raf = requestAnimationFrame(loop);
+
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [handleBargeIn, stopListening, setIsUserSpeaking]);
+
+  useEffect(() => {
+    const callbacks = {
+      onStart: () => {
+        wakeWordEnabledRef.current = false;
+        vadEnabledRef.current = true;
+        stopListening({ skipTranscription: true, nextState: "SPEAKING" });
+      },
+      onEnd: () => {
+        if (bargeInRef.current) return;
+        void resetAudioPipeline("IDLE");
+      },
+      onError: (err: unknown) => {
+        console.error("[TTS] Error:", err);
+        void resetAudioPipeline("IDLE");
+      }
+    };
+
+    ttsEngine.addCallbacks(callbacks);
+    return () => ttsEngine.removeCallbacks(callbacks);
+  }, [resetAudioPipeline, stopListening]);
 
   /* 
    * Brain Integration: Wake Word
    */
+  useEffect(() => {
+    void initMicPipeline();
+    return () => {
+      void teardownMicPipeline();
+    };
+  }, [initMicPipeline, teardownMicPipeline]);
+
   useEffect(() => {
     const offHot = WakeWordCommunication.onMessage((msg) => {
       if (typeof msg === 'string') {
         try {
           const data = JSON.parse(msg);
           if (data.event && data.event.toLowerCase() === 'wakeword_detected') {
+            if (voiceStateRef.current !== "IDLE") return;
             setWakeStatus('WAKE WORD DETECTED');
             brain.handleWakeWordDetected();
+            transitionTo("LISTENING", "wake-word");
             startListening();
           }
         } catch (e) { }
@@ -348,80 +575,20 @@ export const AudioSpectrum = () => {
     });
 
     return () => { offHot(); };
-  }, [startListening]);
+  }, [startListening, transitionTo]);
 
-  // Global Mic loop for Hotword & Viz
-  useEffect(() => {
-    let active = true;
-    let stream: MediaStream | null = null;
-    let source: MediaStreamAudioSourceNode | null = null;
-    let scriptNode: ScriptProcessorNode | null = null;
+  // Global mic pipeline now managed via initMicPipeline/resetAudioPipeline
 
-    const run = async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        streamRef.current = stream;
-
-        const ctx = new AudioContext();
-        setAudioContext(ctx);
-        const anl = ctx.createAnalyser();
-        anl.fftSize = 256;
-        setAnalyser(anl);
-
-        source = ctx.createMediaStreamSource(stream);
-        source.connect(anl);
-
-        // Helper to prepare 16k mono for hotword
-        const downsample = (pcm: Float32Array, inRate: number) => {
-          const outRate = 16000;
-          const ratio = inRate / outRate;
-          const newLen = Math.round(pcm.length / ratio);
-          const out = new Int16Array(newLen);
-          for (let i = 0; i < newLen; i++) {
-            const idx = Math.round(i * ratio);
-            let s = Math.max(-1, Math.min(1, pcm[idx]));
-            out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-          }
-          return out;
-        };
-
-        scriptNode = ctx.createScriptProcessor(4096, 1, 1);
-        scriptNode.onaudioprocess = (e) => {
-          if (!active) return;
-          const input = e.inputBuffer.getChannelData(0);
-          const state = brain.getState();
-
-          if (state === AssistantState.IDLE) {
-            const pcm16 = downsample(input, ctx.sampleRate);
-            WakeWordCommunication.sendBytes(pcm16.buffer);
-          }
-        };
-
-        source.connect(scriptNode);
-        scriptNode.connect(ctx.destination);
-      } catch (err) {
-        console.error("Failed to init mic loop:", err);
-      }
-    };
-
-    run();
-    return () => {
-      active = false;
-      if (scriptNode) scriptNode.disconnect();
-      if (source) source.disconnect();
-      if (stream) stream.getTracks().forEach(t => t.stop());
-    };
-  }, []);
-
-  // Sync isListening with Brain state
+  // Keep voice state aligned with backend thinking/idle when no TTS plays.
   const brainState = useBrainState((s) => s.currentState);
   useEffect(() => {
-    if (brainState === AssistantState.LISTENING) {
-      setIsListening(true);
-    } else {
-      setIsListening(false);
+    if (brainState === AssistantState.THINKING && voiceStateRef.current === "LISTENING") {
+      transitionTo("PROCESSING", "brain-thinking");
     }
-  }, [brainState]);
+    if (brainState === AssistantState.IDLE && voiceStateRef.current === "PROCESSING") {
+      transitionTo("IDLE", "brain-idle");
+    }
+  }, [brainState, transitionTo]);
 
   // Listen for real-time events for dialogs
   useEffect(() => {
@@ -486,8 +653,14 @@ export const AudioSpectrum = () => {
           <JarvisButton
             variant={isListening ? "orange" : "primary"}
             size="xl"
-            className={`pointer-events-auto rounded-full w-20 h-20 ${isSpeaking ? 'ring-4 ring-primary/40 animate-pulse' : ''}`}
-            onClick={isListening ? stopListening : startListening}
+            className={`pointer-events-auto rounded-full w-20 h-20 ${voiceState === "SPEAKING" ? 'ring-4 ring-primary/40 animate-pulse' : ''}`}
+            onClick={() => {
+              if (isListening) {
+                stopListening();
+              } else {
+                void startListening();
+              }
+            }}
             disabled={isTranscribing}
           >
             {isListening ? <MicOff size={28} /> : <Mic size={28} />}
@@ -501,7 +674,7 @@ export const AudioSpectrum = () => {
         animate={{ opacity: 1 }}
         transition={{ delay: 0.5 }}
       >
-        <ListeningAnimation isTranscribing={isTranscribing} isListening={isListening} />
+        <ListeningAnimation isTranscribing={isTranscribing} voiceState={voiceState} />
       </motion.div>
 
       {/* Clarification Dialog */}

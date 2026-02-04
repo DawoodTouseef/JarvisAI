@@ -14,6 +14,12 @@ import json
 from typing import Dict, Any, Optional, Callable, Set
 from datetime import datetime
 from server.agents.orchestrator import CentralOrchestrator
+from server.services.context.context_store import ContextStore
+
+from server.agents.vision_agent import VisionAgent
+from server.agents.system_context_agent import SystemContextAgent
+from server.agents.knowledge_agent import KnowledgeAgent
+
 
 
 logger = logging.getLogger(__name__)
@@ -48,9 +54,13 @@ class OrchestratorSession:
         self._send_task: Optional[asyncio.Task] = asyncio.create_task(self._send_loop())
         self._background_tasks: Set[asyncio.Task] = set()
         self._sent_final_for_task: Set[str] = set()
+        self._last_auth_token: Optional[str] = None
+        self._last_base_url: Optional[str] = None
         
         # Set up event callback to translate orchestrator events
         self.orchestrator.set_event_callback(self._handle_orchestrator_event)
+        self._register_module_agents()
+
         
         logger.info(f"OrchestratorSession {session_id} created")
 
@@ -114,6 +124,24 @@ class OrchestratorSession:
 
             elif event_type == "system_agent_event":
                 await self._send_system_agent_event(task_id, payload)
+
+            elif event_type == "reminder_triggered":
+                await self._send_reminder_triggered(task_id, payload)
+
+            elif event_type == "alarm_triggered":
+                await self._send_alarm_triggered(task_id, payload)
+
+            elif event_type == "autonomous_task_started":
+                await self._send_autonomous_task_started(task_id, payload)
+
+            elif event_type == "autonomous_task_result":
+                await self._send_autonomous_task_result(task_id, payload)
+
+            elif event_type == "autonomous_task_notice":
+                await self._send_autonomous_task_notice(task_id, payload)
+
+            elif event_type == "autonomous_permission_required":
+                await self._send_autonomous_permission_required(task_id, payload)
             
             else:
                 # Unknown event type - log but don't fail
@@ -187,6 +215,12 @@ class OrchestratorSession:
         }
         await self._enqueue_send(message)
         self._sent_final_for_task.add(task_id)
+        try:
+            from server.services.reminder_service import get_reminder_agent
+            rem_agent = get_reminder_agent()
+            await rem_agent.record_autonomous_completion(task_id, payload.get("text", ""))
+        except Exception:
+            pass
     
     async def _send_error(self, task_id: str, payload: Dict[str, Any]):
         """Send orchestrator_error message to frontend."""
@@ -221,8 +255,76 @@ class OrchestratorSession:
             "timestamp": datetime.now().isoformat()
         }
         await self._enqueue_send(message)
+
+    async def _send_reminder_triggered(self, task_id: str, payload: Dict[str, Any]):
+        """Send reminder_triggered message to frontend."""
+        message = {
+            "type": "reminder_triggered",
+            "task_id": task_id,
+            "payload": payload,
+            "use_tts": True,
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_alarm_triggered(self, task_id: str, payload: Dict[str, Any]):
+        """Send alarm_triggered message to frontend."""
+        message = {
+            "type": "alarm_triggered",
+            "task_id": task_id,
+            "payload": payload,
+            "use_tts": True,
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_autonomous_task_started(self, task_id: str, payload: Dict[str, Any]):
+        """Send autonomous_task_started message to frontend."""
+        message = {
+            "type": "autonomous_task_started",
+            "task_id": task_id,
+            "payload": payload,
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_autonomous_task_result(self, task_id: str, payload: Dict[str, Any]):
+        """Send autonomous_task_result message to frontend."""
+        message = {
+            "type": "autonomous_task_result",
+            "task_id": task_id,
+            "payload": payload,
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_autonomous_task_notice(self, task_id: str, payload: Dict[str, Any]):
+        """Send autonomous_task_notice message to frontend."""
+        message = {
+            "type": "autonomous_task_notice",
+            "task_id": task_id,
+            "payload": payload,
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_autonomous_permission_required(self, task_id: str, payload: Dict[str, Any]):
+        """Send autonomous_permission_required message to frontend."""
+        message = {
+            "type": "autonomous_permission_required",
+            "task_id": task_id,
+            "payload": payload,
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    def _register_module_agents(self):
+        """Register additional agents without modifying the CentralOrchestrator."""
+        for agent in [VisionAgent(), SystemContextAgent(), KnowledgeAgent()]:
+            if not any(a.name == agent.name for a in self.orchestrator.agents):
+                self.orchestrator.agents.append(agent)
     
-    async def handle_user_query(self, text: str, auth_token: str, base_url: str, request_id: Optional[str] = None) -> str:
+    async def handle_user_query(self, text: str, auth_token: str, base_url: str, request_id: Optional[str] = None, source: str = "user") -> str:
         """
         Handle a user query by submitting it to the orchestrator.
         
@@ -240,12 +342,15 @@ class OrchestratorSession:
 
         task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.session_id}"
         self.active_task_id = task_id
+        self._last_auth_token = auth_token
+        self._last_base_url = base_url
         
         task_data = {
             "id": task_id,
             "query": text,
             "auth_token": auth_token,
-            "base_url": base_url
+            "base_url": base_url,
+            "session_id": self.session_id,
         }
         
         logger.info(f"Session {self.session_id}: Submitting task {task_id}")
@@ -254,8 +359,22 @@ class OrchestratorSession:
         task = asyncio.create_task(self._execute_task(task_data))
         self._background_tasks.add(task)
         task.add_done_callback(lambda t: self._background_tasks.discard(t))
+
+        if source == "user":
+            try:
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                rem_agent.ensure_started()
+                await rem_agent.record_user_query(text)
+            except Exception:
+                pass
         
         return task_id
+
+    async def submit_autonomous_query(self, text: str) -> str:
+        auth_token = self._last_auth_token or ""
+        base_url = self._last_base_url or ""
+        return await self.handle_user_query(text, auth_token, base_url, source="autonomous")
     
     async def _execute_task(self, task_data: Dict[str, Any]):
         """Execute task and handle completion/errors."""
@@ -263,10 +382,13 @@ class OrchestratorSession:
             result = await self.orchestrator.submit_task(task_data)
             status = result.get('workflow_status')
             logger.info(f"Task {task_data['id']} completed with status: {status}")
-            logger.info(f"Task {task_data['id']} result: {result['processing_result']}")
+            logger.info(f"Task {task_data['id']} result: \n{result['processing_result']}")
             # Send final response if available and not already emitted
             processing_result = result.get('processing_result')
             if processing_result and task_data['id'] not in self._sent_final_for_task:
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                await rem_agent.record_assistant_query(processing_result)
                 await self._send_assistant_response(task_data['id'], {"text": str(processing_result)})
                 
         except Exception as e:
@@ -314,7 +436,21 @@ class OrchestratorSession:
         """
         logger.info(f"Session {self.session_id}: Interrupting task {task_id}")
         await self.orchestrator.handle_interrupt(task_id)
+        try:
+            from server.services.reminder_service import get_reminder_agent
+            rem_agent = get_reminder_agent()
+            await rem_agent.record_autonomous_result(task_id, accepted=False, reason="interrupted")
+        except Exception:
+            pass
         logger.info(f"Session {self.session_id}: Interrupt handled for task {task_id}")
+
+    async def handle_external_event(self, event_type: str, task_id: str, payload: Dict[str, Any]):
+        """Allow external services (e.g., RemAgent) to emit events via this session."""
+        await self._handle_orchestrator_event(event_type, task_id, payload)
+
+    async def store_vision_input(self, image_bytes: bytes, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Store latest vision input for this session."""
+        return ContextStore.set_image(self.session_id, image_bytes, metadata)
     
     async def handle_cancel_task(self, task_id: str):
         """
@@ -328,6 +464,12 @@ class OrchestratorSession:
         
         if success:
             logger.info(f"Task {task_id} cancelled successfully")
+            try:
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                await rem_agent.record_autonomous_result(task_id, accepted=False, reason="cancelled")
+            except Exception:
+                pass
         else:
             logger.warning(f"Failed to cancel task {task_id}")
     
@@ -335,6 +477,7 @@ class OrchestratorSession:
         """Clean up session on disconnect."""
         logger.info(f"OrchestratorSession {self.session_id} disconnecting")
         self.is_connected = False
+        ContextStore.evict(self.session_id)
         
         # Cancel active task if any
         if self.active_task_id:

@@ -18,7 +18,7 @@ from .personal_assistant.schemas import (
 )
 from .personal_assistant.extended_schemas import (
     TimerCreate, TimerSchema,
-    AlarmCreate, AlarmUpdate, AlarmSchema,
+    ReminderCreate, ReminderUpdate,
     ShoppingListCreate, ShoppingItemCreate, ShoppingListSchema, ShoppingItemSchema,
     HealthRecordCreate, HealthRecordSchema,
     UserPreferenceCreate, UserPreferenceSchema
@@ -26,7 +26,7 @@ from .personal_assistant.extended_schemas import (
 from .personal_assistant.productivity_tools import calculate, convert_units, parse_duration, format_duration
 from server.database.models import (
     Task, CalendarEvent, Note, ConversationHistory,
-    Timer, Alarm, ShoppingList, ShoppingItem, HealthRecord, UserPreference
+    Timer, ShoppingList, ShoppingItem, HealthRecord, UserPreference
 )
 from server.database.async_database import get_async_db
 from server.services.jarvis_pydantic_model import JarvisPydanticModel
@@ -54,14 +54,14 @@ class PersonalAgent(BaseAgent):
                 "1. Task Management: Create, update, complete, and delete tasks\n"
                 "2. Calendar: Schedule events, manage appointments\n"
                 "3. Notes: Create and organize notes\n"
-                "4. Timers & Alarms: Set timers and alarms with custom labels\n"
+                "4. Reminders & Alarms: Set reminders/alarms with custom labels and recurrence\n"
                 "5. Shopping Lists: Create lists and manage shopping items\n"
                 "6. Health Tracking: Log medication, exercise, sleep, water intake\n"
                 "7. Productivity: Calculate expressions, convert units (length, weight, temperature, volume, time)\n"
                 "8. User Preferences: Store and retrieve user preferences\n"
                 "9. Conversation Memory: Store and retrieve conversation context\n\n"
                 "Always use the appropriate tools for each task. Be helpful, accurate, and efficient. "
-                "When setting timers or alarms, confirm the details with the user. "
+                "When setting timers, reminders, or alarms, confirm the details with the user. "
                 "For calculations and conversions, show your work clearly."
             )
         )
@@ -307,32 +307,92 @@ class PersonalAgent(BaseAgent):
                 logger.error(f"Error cancelling timer: {traceback.format_exc()}")
                 return {"status": "error", "message": str(e)}
         
+        # Reminder Tools
+        @self.agent.tool
+        @requires_permission(RiskTolerance.MEDIUM, "Set Reminder")
+        async def set_reminder(ctx: RunContext[AgentDeps], reminder: ReminderCreate) -> Dict[str, Any]:
+            """Set a reminder at a specific datetime."""
+            try:
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                rem_agent.ensure_started()
+                result = await rem_agent.add_reminder(
+                    text=reminder.text,
+                    trigger_at=reminder.trigger_at,
+                    label=reminder.label,
+                    recurrence=reminder.recurrence.model_dump() if reminder.recurrence else None,
+                )
+                return result
+            except Exception as e:
+                logger.error(f"Error setting reminder: {traceback.format_exc()}")
+                return {"status": "error", "message": str(e)}
+
+        @self.agent.tool
+        @requires_permission(RiskTolerance.LOW, "List Reminders")
+        async def list_reminders(ctx: RunContext[AgentDeps]) -> Dict[str, Any]:
+            """List all reminders."""
+            try:
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                items = await rem_agent.list_items(kind="reminder")
+                return {"status": "success", "data": items}
+            except Exception as e:
+                logger.error(f"Error listing reminders: {traceback.format_exc()}")
+                return {"status": "error", "message": str(e)}
+
+        @self.agent.tool
+        @requires_permission(RiskTolerance.MEDIUM, "Update Reminder")
+        async def update_reminder(ctx: RunContext[AgentDeps], reminder: ReminderUpdate) -> Dict[str, Any]:
+            """Update an existing reminder."""
+            try:
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                result = await rem_agent.update_item(
+                    reminder.id,
+                    text=reminder.text,
+                    label=reminder.label,
+                    trigger_at=reminder.trigger_at,
+                    recurrence=reminder.recurrence.model_dump() if reminder.recurrence else None,
+                )
+                return result
+            except Exception as e:
+                logger.error(f"Error updating reminder: {traceback.format_exc()}")
+                return {"status": "error", "message": str(e)}
+
+        @self.agent.tool
+        @requires_permission(RiskTolerance.MEDIUM, "Cancel Reminder")
+        async def cancel_reminder(ctx: RunContext[AgentDeps], reminder_id: str) -> Dict[str, Any]:
+            """Cancel a reminder."""
+            try:
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                return await rem_agent.cancel_item(reminder_id)
+            except Exception as e:
+                logger.error(f"Error cancelling reminder: {traceback.format_exc()}")
+                return {"status": "error", "message": str(e)}
+
+        @self.agent.tool
+        @requires_permission(RiskTolerance.LOW, "Snooze Reminder")
+        async def snooze_reminder(ctx: RunContext[AgentDeps], reminder_id: str, minutes: int = 5) -> Dict[str, Any]:
+            """Snooze a reminder by a number of minutes."""
+            try:
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                return await rem_agent.snooze_item(reminder_id, minutes=minutes)
+            except Exception as e:
+                logger.error(f"Error snoozing reminder: {traceback.format_exc()}")
+                return {"status": "error", "message": str(e)}
+
         # Alarm Tools
         @self.agent.tool
         @requires_permission(RiskTolerance.MEDIUM, "Set Alarm")
         async def set_alarm(ctx: RunContext[AgentDeps], time: str, label: Optional[str] = None, days: Optional[List[str]] = None) -> Dict[str, Any]:
             """Set an alarm at a specific time (HH:MM format, 24-hour). Optionally repeat on specific days."""
             try:
-                metadata_json = None
-                if ctx.deps.role_context:
-                    metadata_json = ctx.deps.role_context.model_dump_json()
-                
-                new_alarm = Alarm(
-                    time=time,
-                    label=label,
-                    days_of_week=json.dumps(days) if days else None,
-                    enabled=True,
-                    metadata_json=metadata_json
-                )
-                ctx.deps.session.add(new_alarm)
-                await ctx.deps.session.commit()
-                await ctx.deps.session.refresh(new_alarm)
-                
-                return {
-                    "status": "success",
-                    "message": f"Alarm set for {time}",
-                    "data": {"id": new_alarm.id}
-                }
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                rem_agent.ensure_started()
+                return await rem_agent.add_alarm(time_str=time, label=label, days_of_week=days)
             except Exception as e:
                 logger.error(f"Error setting alarm: {traceback.format_exc()}")
                 return {"status": "error", "message": str(e)}
@@ -342,12 +402,10 @@ class PersonalAgent(BaseAgent):
         async def list_alarms(ctx: RunContext[AgentDeps]) -> Dict[str, Any]:
             """List all alarms."""
             try:
-                result = await ctx.deps.session.execute(select(Alarm))
-                alarms = result.scalars().all()
-                return {
-                    "status": "success",
-                    "data": [AlarmSchema.model_validate(a, from_attributes=True).model_dump() for a in alarms]
-                }
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                items = await rem_agent.list_items(kind="alarm")
+                return {"status": "success", "data": items}
             except Exception as e:
                 logger.error(f"Error listing alarms: {traceback.format_exc()}")
                 return {"status": "error", "message": str(e)}
@@ -357,9 +415,9 @@ class PersonalAgent(BaseAgent):
         async def delete_alarm(ctx: RunContext[AgentDeps], alarm_id: str) -> Dict[str, Any]:
             """Delete an alarm."""
             try:
-                await ctx.deps.session.execute(delete(Alarm).where(Alarm.id == alarm_id))
-                await ctx.deps.session.commit()
-                return {"status": "success", "message": "Alarm deleted"}
+                from server.services.reminder_service import get_reminder_agent
+                rem_agent = get_reminder_agent()
+                return await rem_agent.cancel_item(alarm_id)
             except Exception as e:
                 logger.error(f"Error deleting alarm: {traceback.format_exc()}")
                 return {"status": "error", "message": str(e)}
