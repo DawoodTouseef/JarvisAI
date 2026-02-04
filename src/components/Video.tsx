@@ -8,17 +8,20 @@ const Video = () => {
 
   const [error, setError] = useState<string | null>(null);
   const setVideoStream = useVideoStore((s) => s.setVideoStream);
+  const existingStream = useVideoStore((s) => s.videostream);
 
   useEffect(() => {
     let streamToUse: MediaStream | null = null;
+    let createdStream = false;
     
     const startCamera = async () => {
       try {
         setError(null);
-        const mediaStream = await navigator.mediaDevices.getUserMedia({
+        const mediaStream = existingStream || await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: true,
         });
+        if (!existingStream) createdStream = true;
         streamToUse = mediaStream;
         setStream(mediaStream);
         
@@ -48,12 +51,12 @@ const Video = () => {
 
     // Cleanup function
     return () => {
-      if (streamToUse) {
+      if (streamToUse && createdStream) {
         const tracks = streamToUse.getTracks();
         tracks.forEach(track => track.stop());
       }
     };
-  }, [setVideoStream]);
+  }, [setVideoStream, existingStream]);
 
   return (
     <GlassPanel className="p-4">

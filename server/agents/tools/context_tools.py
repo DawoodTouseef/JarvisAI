@@ -43,6 +43,7 @@ class SessionContextTool(BaseTool):
         if not payload:
             return {"error": "No context found for this session."}
         # Do not return raw bytes
-        image_meta = payload.get("image", {}).get("metadata", {}) if payload.get("image") else {}
+        image_meta = payload.get("screenshot_image", {}).get("metadata", {}) if payload.get("screenshot_image") else {}
+        camera_meta = payload.get("camera_image", {}).get("metadata", {}) if payload.get("camera_image") else {}
         screen_text = payload.get("screen_text", {}).get("text") if payload.get("screen_text") else None
-        return {"image_metadata": image_meta, "screen_text": screen_text}
+        return {"image_metadata": image_meta, "camera_metadata": camera_meta, "screen_text": screen_text}

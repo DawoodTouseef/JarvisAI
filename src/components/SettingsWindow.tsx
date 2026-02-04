@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { GlassPanel } from './ui/GlassPanel';
 import { JarvisButton } from './ui/JarvisButton';
 import { Switch } from './ui/switch';
-import { Communication } from '@/lib/client_websocket';
+import { Communication, AgentCommunication } from '@/lib/client_websocket';
 import { toast } from 'sonner';
 import { ArrowLeft, ArrowRight, Edit, Plus } from 'lucide-react';
 import { JarvisInput } from './ui/JarvisInput';
@@ -30,6 +30,8 @@ interface SettingsWindowProps {
   onClose: () => void;
   onUseVideoChange?: (useVideo: boolean) => void;
   currentUseVideo?: boolean;
+  onUseCameraVisionChange?: (useCameraVision: boolean) => void;
+  currentUseCameraVision?: boolean;
   onCityChange?: (city: string) => void;
   currentCity?: string;
   
@@ -40,6 +42,7 @@ interface AppSettings {
   city: string;
   use24hrFormat: boolean;
   useFaceRecognition: boolean;
+  useCameraVision: boolean;
   
 }
 export enum TaskType {
@@ -59,9 +62,10 @@ type Event = {
 
 export const SettingsWindow = ({
    isOpen, onClose, onUseVideoChange, currentUseVideo, 
+   onUseCameraVisionChange, currentUseCameraVision,
    onCityChange, currentCity }: SettingsWindowProps) => {
   const [settings, setSettings] = useState<AppSettings>({ useVideo: currentUseVideo || false, 
-    city: currentCity || 'New York', use24hrFormat: false, useFaceRecognition: false });
+    city: currentCity || 'New York', use24hrFormat: false, useFaceRecognition: false, useCameraVision: currentUseCameraVision || false });
   const [isLoading, setIsLoading] = useState(true);
   const [isWeatherOpen, setIsWeatherOpen] = useState(false);
   const [addEvent, setAddEvent] = useState<boolean>(false);
@@ -324,7 +328,8 @@ export const SettingsWindow = ({
                 useVideo: data.payload?.useVideo ?? false,
                 city: data.payload?.city ?? 'New York',
                 use24hrFormat: data.payload?.use24hrFormat ?? false,
-                useFaceRecognition: data.payload?.useFaceRecognition ?? false
+                useFaceRecognition: data.payload?.useFaceRecognition ?? false,
+                useCameraVision: data.payload?.useCameraVision ?? false
               });
               off(); // Remove the listener after receiving the response
             }
@@ -388,6 +393,20 @@ export const SettingsWindow = ({
     setSettings(newSettings);
     saveSettings(newSettings);
     setIsFaceRecognitionOpen(checked);
+  };
+  const handleCameraVisionChange = (checked: boolean) => {
+    const newSettings = { ...settings, useCameraVision: checked };
+    setSettings(newSettings);
+    onUseCameraVisionChange?.(checked);
+    saveSettings(newSettings);
+    try {
+      AgentCommunication.sendMessage(JSON.stringify({
+        type: "vision_input",
+        payload: { camera_enabled: checked, has_frame: false }
+      }));
+    } catch (e) {
+      console.error("Failed to send camera vision toggle:", e);
+    }
   };
   
   // Debounced search function to avoid too many API calls
@@ -874,6 +893,17 @@ export const SettingsWindow = ({
             <Switch
               checked={settings.useFaceRecognition}
               onCheckedChange={handleFaceRecognitionChange}
+              disabled={isLoading}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-orbitron text-sm text-primary tracking-wider">Camera Vision</h3>
+              <p className="text-xs text-muted-foreground">Enable or disable camera-based vision</p>
+            </div>
+            <Switch
+              checked={settings.useCameraVision}
+              onCheckedChange={handleCameraVisionChange}
               disabled={isLoading}
             />
           </div>

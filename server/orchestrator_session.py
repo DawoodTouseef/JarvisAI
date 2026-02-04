@@ -19,6 +19,7 @@ from server.services.context.context_store import ContextStore
 from server.agents.vision_agent import VisionAgent
 from server.agents.system_context_agent import SystemContextAgent
 from server.agents.knowledge_agent import KnowledgeAgent
+from server.services.vision.screenshot_capture import capture_screenshot_bytes
 
 
 
@@ -56,10 +57,12 @@ class OrchestratorSession:
         self._sent_final_for_task: Set[str] = set()
         self._last_auth_token: Optional[str] = None
         self._last_base_url: Optional[str] = None
+        self._screenshot_task: Optional[asyncio.Task] = None
         
         # Set up event callback to translate orchestrator events
         self.orchestrator.set_event_callback(self._handle_orchestrator_event)
         self._register_module_agents()
+        self._start_screenshot_loop()
 
         
         logger.info(f"OrchestratorSession {session_id} created")
@@ -323,6 +326,28 @@ class OrchestratorSession:
         for agent in [VisionAgent(), SystemContextAgent(), KnowledgeAgent()]:
             if not any(a.name == agent.name for a in self.orchestrator.agents):
                 self.orchestrator.agents.append(agent)
+
+    def _start_screenshot_loop(self):
+        """Always-on backend screenshot capture for vision."""
+        if self._screenshot_task:
+            return
+        self._screenshot_task = asyncio.create_task(self._screenshot_loop())
+        self._background_tasks.add(self._screenshot_task)
+        self._screenshot_task.add_done_callback(lambda t: self._background_tasks.discard(t))
+
+    async def _screenshot_loop(self):
+        while self.is_connected:
+            try:
+                image_bytes = await asyncio.to_thread(capture_screenshot_bytes)
+                if image_bytes:
+                    ContextStore.set_screenshot_image(
+                        self.session_id,
+                        image_bytes,
+                        {"source": "backend_screenshot", "timestamp": datetime.now().isoformat()},
+                    )
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
     
     async def handle_user_query(self, text: str, auth_token: str, base_url: str, request_id: Optional[str] = None, source: str = "user") -> str:
         """
@@ -344,6 +369,7 @@ class OrchestratorSession:
         self.active_task_id = task_id
         self._last_auth_token = auth_token
         self._last_base_url = base_url
+        ContextStore.set_task_session(task_id, self.session_id)
         
         task_data = {
             "id": task_id,
@@ -450,7 +476,7 @@ class OrchestratorSession:
 
     async def store_vision_input(self, image_bytes: bytes, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Store latest vision input for this session."""
-        return ContextStore.set_image(self.session_id, image_bytes, metadata)
+        return ContextStore.set_camera_image(self.session_id, image_bytes, metadata)
     
     async def handle_cancel_task(self, task_id: str):
         """
@@ -491,6 +517,8 @@ class OrchestratorSession:
         # Stop send loop
         if self._send_task:
             self._send_task.cancel()
+        if self._screenshot_task:
+            self._screenshot_task.cancel()
         
         # Clear references
         self.orchestrator = None

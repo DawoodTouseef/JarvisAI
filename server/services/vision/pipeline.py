@@ -36,6 +36,29 @@ class VisionPipeline:
             },
         }
 
+    async def analyze_inputs(
+        self,
+        screenshot_image: bytes,
+        camera_image: Optional[bytes],
+        camera_enabled: bool,
+    ) -> Dict[str, Any]:
+        screen_result = await self.analyze(screenshot_image)
+        camera_result = None
+        if camera_enabled and camera_image:
+            camera_result = await self.analyze(camera_image)
+
+        return {
+            "screen_context": screen_result.get("ui_context"),
+            "detected_objects": screen_result.get("objects", []),
+            "text_on_screen": screen_result.get("ocr", {}).get("text", ""),
+            "user_camera_context": camera_result.get("ocr", {}).get("text", "") if camera_result else None,
+            "camera_objects": camera_result.get("objects", []) if camera_result else [],
+            "errors": {
+                "screen": screen_result.get("errors"),
+                "camera": camera_result.get("errors") if camera_result else None,
+            },
+        }
+
     def _run_ocr(self, image_bytes: bytes) -> Dict[str, Any]:
         return self.ocr_client.extract_text(image_bytes)
 

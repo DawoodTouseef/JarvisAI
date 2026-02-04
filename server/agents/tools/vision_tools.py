@@ -19,8 +19,28 @@ class VisionAnalyzeTool(BaseTool):
     args_schema = VisionAnalyzeSchema
 
     async def run(self, session_id: str):
-        image_bytes = ContextStore.get_latest_image(session_id)
-        if not image_bytes:
-            return {"error": "No image context available for this session."}
+        screenshot_image = ContextStore.get_screenshot_image(session_id)
+        if not screenshot_image:
+            return {"error": "No screenshot context available for this session."}
+        camera_enabled = ContextStore.get_camera_enabled(session_id)
+        camera_image = ContextStore.get_camera_image(session_id) if camera_enabled else None
         pipeline = VisionPipeline()
-        return await pipeline.analyze(image_bytes)
+        return await pipeline.analyze_inputs(
+            screenshot_image=screenshot_image,
+            camera_image=camera_image,
+            camera_enabled=camera_enabled,
+        )
+
+
+class VisionPerceptionSchema(BaseModel):
+    session_id: str = Field(..., description="Session id for pulling the latest vision context")
+
+
+class VisionPerceptionTool(BaseTool):
+    name: str = "vision_perception"
+    description: str = "Centralized vision perception (screen + optional camera)."
+    args_schema = VisionPerceptionSchema
+
+    async def run(self, session_id: str):
+        tool = VisionAnalyzeTool()
+        return await tool.run(session_id=session_id)

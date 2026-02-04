@@ -619,10 +619,16 @@ async def voice_assistant_websocket(websocket: WebSocket):
                         raise ValueError("task_id is required")
                 
                 elif message_type == "vision_input":
-                    # Handle incoming vision input (image bytes follow JSON)
+                    # Handle incoming camera vision input (optional)
                     metadata = payload or {}
-                    image_bytes = await websocket.receive_bytes()
-                    stored = await session.store_vision_input(image_bytes, metadata)
+                    camera_enabled = bool(metadata.get("camera_enabled", False))
+                    has_frame = bool(metadata.get("has_frame", False))
+                    from server.services.context.context_store import ContextStore
+                    ContextStore.set_camera_enabled(session.session_id, camera_enabled)
+                    stored = False
+                    if camera_enabled and has_frame:
+                        image_bytes = await websocket.receive_bytes()
+                        stored = await session.store_vision_input(image_bytes, metadata)
                     await send_to_websocket({
                         "type": "vision_input_ack",
                         "task_id": session.active_task_id,

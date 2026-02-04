@@ -16,6 +16,7 @@ import { useTranscriptionStore } from "@/stores/transcription";
 import { QuickAction } from "@/components/widgets/QuickAction";
 import { JarvisInput } from "@/components/ui/JarvisInput";
 import Video from "@/components/Video";
+import { CameraVisionSender } from "@/components/CameraVisionSender";
 import { SettingsWindow } from "@/components/SettingsWindow";
 import { NotesWindow } from "@/components/NotesWindow";
 import { CalendarWindow } from "@/components/CalendarWindow";
@@ -35,6 +36,7 @@ const Dashboard = () => {
   const [calendar, setCalendar] = useState(false);
   const [tasks, setTasks] = useState(false);
   const [use24hrFormat, setUse24hrFormat] = useState(false);
+  const [useCameraVision, setUseCameraVision] = useState(false);
 
   const transcription = useTranscriptionStore((state) => state.text);
   const [isClockOpen, setIsClockOpen] = useState(false);
@@ -69,6 +71,7 @@ const Dashboard = () => {
             setUseVideo(data.payload.useVideo || false);
             setCity(data.payload.city || 'New York'); // Update city from settings
             setUse24hrFormat(data.payload.use24hrFormat || false); // Update 24-hour format from settings
+            setUseCameraVision(data.payload.useCameraVision || false);
             off(); // Remove the listener after receiving the response
           }
         } catch (e) {
@@ -96,6 +99,9 @@ const Dashboard = () => {
         }
         if (data.payload && data.payload.use24hrFormat !== undefined) {
           setUse24hrFormat(data.payload.use24hrFormat);
+        }
+        if (data.payload && data.payload.useCameraVision !== undefined) {
+          setUseCameraVision(data.payload.useCameraVision);
         }
       }
     } catch (e) {
@@ -354,6 +360,8 @@ const Dashboard = () => {
         onClose={() => setIsSettingsOpen(false)}
         currentUseVideo={useVideo}
         onUseVideoChange={setUseVideo}
+        currentUseCameraVision={useCameraVision}
+        onUseCameraVisionChange={setUseCameraVision}
         currentCity={city}
         onCityChange={setCity}
       />
@@ -367,6 +375,8 @@ const Dashboard = () => {
         isOpen={calendar}
         onClose={() => setCalendar(false)}
       />
+
+      <CameraVisionSender enabled={useCameraVision} />
       
     </div>
   );

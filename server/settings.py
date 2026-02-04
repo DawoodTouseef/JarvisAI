@@ -40,6 +40,7 @@ class SettingsManager:
             "city": "New York",
             "use24hrFormat": False,
             "useFaceRecognition": False,
+            "useCameraVision": False,
             "faceRecognitionModels": [],
             "events": []
         }
@@ -62,6 +63,7 @@ class SettingsManager:
                 "city": "New York",
                 "use24hrFormat": False,
                 "useFaceRecognition": False,
+                "useCameraVision": False,
                 "faceRecognitionModels": [],
                 "events": []
             }

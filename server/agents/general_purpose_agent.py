@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, Field
 from .base_agent import BaseAgent, Task, AgentResponse, AgentStatus
 from .tools.tool_system import registry as tool_registry
+from server.services.context.context_store import ContextStore
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,15 @@ RETURN JSON ONLY in this format:
         
         if not tool:
             return {"error": f"Tool '{tool_name}' not found."}
+
+        # Auto-inject session_id for vision/context tools when missing
+        if tool_name in {"vision_analyze", "vision_perception", "session_context"}:
+            if not tool_input:
+                tool_input = {}
+            if "session_id" not in tool_input:
+                session_id = ContextStore.get_session_for_task(task_id)
+                if session_id:
+                    tool_input["session_id"] = session_id
             
         await self._emit_event(task_id, "tool_called", {"tool": tool_name, "input": tool_input})
         
