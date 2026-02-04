@@ -187,7 +187,7 @@ const Login = () => {
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 0.4 }}
             >
-              <div className="flex-items">
+              <div className="flex items-center gap-2">
                 <JarvisInput
                 type={showPassword ? "text" : "password"}
                 placeholder="Enter access code"
@@ -195,6 +195,8 @@ const Login = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 icon={<Lock size={18} />}
                 required
+                className="flex-1"
+
               />
               <JarvisButton onClick={()=>{
                 setShowPassword(!showPassword)

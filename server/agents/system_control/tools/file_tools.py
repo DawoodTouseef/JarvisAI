@@ -1,0 +1,37 @@
+import os
+from .registry import register_tool
+
+@register_tool("read_file")
+def read_file(path: str) -> dict:
+    try:
+        if not os.path.exists(path):
+            return {"success": False, "error": f"File not found: {path}"}
+        
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return {"success": True, "content": content}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@register_tool("write_file")
+def write_file(path: str, content: str) -> dict:
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return {"success": True, "message": f"File written to {path}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@register_tool("delete_file")
+def delete_file(path: str) -> dict:
+    try:
+        if not os.path.exists(path):
+            return {"success": False, "error": f"File not found: {path}"}
+        
+        os.remove(path)
+        return {"success": True, "message": f"File deleted: {path}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

@@ -4,15 +4,14 @@ import { Mic, MicOff } from "lucide-react";
 import { JarvisButton } from "@/components/ui/JarvisButton";
 import { toast } from "sonner";
 import { useTranscriptionStore } from "@/stores/transcription";
-import { Communication } from "@/lib/client_websocket";
+import { Communication, AgentCommunication, WakeWordCommunication } from '@/lib/client_websocket';
+import { brain, AssistantState, useBrainState } from '@/brain';
 import { useSpeakingStore } from "@/stores/speaking";
-import { WakeWordCommunication } from "@/lib/client_websocket";
-
 
 const ListeningAnimation = ({ isTranscribing, isListening }: { isTranscribing: boolean; isListening: boolean; }) => {
-  let  isSpeaking = useSpeakingStore((s) => s.isSpeaking);
+  let isSpeaking = useSpeakingStore((s) => s.isSpeaking);
   const text = isTranscribing ? "TRANSCRIBING..." : isSpeaking ? "SPEAKING..." : isListening ? "LISTENING..." : "AWAITING VOICE COMMAND";
-        
+
   const chars = text.split('  ');
 
   const container = {
@@ -24,22 +23,22 @@ const ListeningAnimation = ({ isTranscribing, isListening }: { isTranscribing: b
     hidden: { opacity: 0, y: 6 },
     visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 400, damping: 24 } },
   } as const;
-  
+
   return (
     <motion.p
-       className={`font-orbitron text-sm tracking-wider ${isTranscribing ? 'text-primary shimmer-text glow-text animate-flicker' : isListening ? 'text-primary glow-text animate-pulse-glow' : 'text-primary glow-text'}`}
+      className={`font-orbitron text-sm tracking-wider ${isTranscribing ? 'text-primary shimmer-text glow-text animate-flicker' : isListening ? 'text-primary glow-text animate-pulse-glow' : 'text-primary glow-text'}`}
       variants={container}
       initial="hidden"
       animate="visible"
       aria-live="polite"
     >
-      
-        {chars.map((c, i) => (
+
+      {chars.map((c, i) => (
         <motion.span key={i} className="inline-block" variants={child}>
           {c}
         </motion.span>
       ))}
-      
+
     </motion.p>
   );
 }
@@ -53,20 +52,23 @@ export const AudioSpectrum = () => {
   const [isListening, setIsListening] = useState(false);
   const chunksRef = useRef<Blob[]>([]);
   const url = localStorage.getItem('jarvis:selectedServer') || '';
+
   // hotword scanning state
-  const hotwordStreamRef = useRef<MediaStream | null>(null);
-  const hotwordCtxRef = useRef<AudioContext | null>(null);
-  const hotwordNodeRef = useRef<ScriptProcessorNode | null>(null);
-  const hotwordListeningRef = useRef<boolean>(false);
   const [wakeStatus, setWakeStatus] = useState<string>("AWAITING WAKE WORD");
+
   // Global transcription available throughout the app
   const transcriptions = useTranscriptionStore((s) => s.text);
   const setTranscription = useTranscriptionStore((s) => s.setText);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [lastSocketMessage, setLastSocketMessage] = useState<string>('');
+  const [agentResponse, setAgentResponse] = useState<any>(null);
   const isSpeaking = useSpeakingStore((s) => s.isSpeaking);
   const setIsSpeaking = useSpeakingStore((s) => s.setText);
-    const drawSpectrum = useCallback(() => {
+
+  // New state for dialogs
+  const [clarificationReq, setClarificationReq] = useState<{ task_id: string, question: string } | null>(null);
+  const [permissionReq, setPermissionReq] = useState<{ task_id: string, summary: string, operation: string, risk: string } | null>(null);
+
+  const drawSpectrum = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -77,39 +79,63 @@ export const AudioSpectrum = () => {
     const centerY = canvas.height / 2;
     const radius = Math.min(centerX, centerY) * 0.6;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Draw background glow
-    const bgGradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius * 1.5);
-    bgGradient.addColorStop(0, "hsla(185, 100%, 50%, 0.05)");
-    bgGradient.addColorStop(1, "transparent");
-    ctx.fillStyle = bgGradient;
+    // Clear with fade effect for trails
+    ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    const bars = 64;
+    const bars = 128; // Increased resolution
     const dataArray = new Uint8Array(bars);
 
-    if (analyser && isListening) {
+    // Get State
+    const brainState = brain.getState();
+    const isThinking = brainState === AssistantState.THINKING;
+    const isSpeakingState = brainState === AssistantState.SPEAKING || isSpeaking;
+    const isListeningState = isListening || brainState === AssistantState.LISTENING;
+
+    if (analyser && (isListeningState || isSpeakingState)) {
+      analyser.fftSize = 512; // Higher FFT size for better resolution
       const tempArray = new Uint8Array(analyser.frequencyBinCount);
       analyser.getByteFrequencyData(tempArray);
-      for (let i = 0; i < bars && i < tempArray.length; i++) {
-        dataArray[i] = tempArray[i];
+
+      // Interpolate to fit bars count
+      const step = Math.floor(tempArray.length / bars);
+      for (let i = 0; i < bars; i++) {
+        let val = 0;
+        for (let j = 0; j < step; j++) {
+          val += tempArray[i * step + j];
+        }
+        dataArray[i] = val / step;
       }
     } else {
-      // Idle animation
+      // Synthetic data for Idle / Thinking
       const time = Date.now() / 1000;
       for (let i = 0; i < bars; i++) {
-        dataArray[i] = 30 + Math.sin(time * 2 + i * 0.3) * 20 + Math.sin(time * 0.5 + i * 0.1) * 10;
+        if (isThinking) {
+          // Fast rotating wave for thinking
+          dataArray[i] = 50 + Math.sin(time * 10 + i * 0.5) * 30;
+        } else {
+          // Slow breathing for idle
+          dataArray[i] = 20 + Math.sin(time * 2 + i * 0.2) * 10;
+        }
       }
     }
 
+    // Colors based on state
+    let baseHue = 185; // Cyan (Default)
+    if (isThinking) baseHue = 280; // Purple
+    if (isSpeakingState) baseHue = 140; // Green
+    if (wakeStatus === 'WAKE WORD DETECTED') baseHue = 30; // Orange
+
     // Draw circular spectrum
     for (let i = 0; i < bars; i++) {
-      const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
+      const angle = (i / bars) * Math.PI * 2 - Math.PI / 2 + (isThinking ? Date.now() / 500 : 0); // Rotate if thinking
       const value = dataArray[i] || 0;
-      const barHeight = (value / 255) * radius * 0.8 + 10;
 
-      const innerRadius = radius * 0.4;
+      // Scale bar height based on state responsiveness
+      let barHeight = (value / 255) * radius * 0.8 + 5;
+      if (isSpeakingState) barHeight *= 1.2;
+
+      const innerRadius = radius * 0.45;
       const x1 = centerX + Math.cos(angle) * innerRadius;
       const y1 = centerY + Math.sin(angle) * innerRadius;
       const x2 = centerX + Math.cos(angle) * (innerRadius + barHeight);
@@ -117,81 +143,61 @@ export const AudioSpectrum = () => {
 
       // Gradient for bars
       const gradient = ctx.createLinearGradient(x1, y1, x2, y2);
-      gradient.addColorStop(0, "hsla(185, 100%, 50%, 0.6)");
-      gradient.addColorStop(0.5, "hsla(185, 100%, 60%, 0.8)");
-      gradient.addColorStop(1, "hsla(210, 100%, 60%, 0.9)");
+      gradient.addColorStop(0, `hsla(${baseHue}, 100%, 50%, 0.6)`);
+      gradient.addColorStop(0.5, `hsla(${baseHue}, 100%, 60%, 0.8)`);
+      gradient.addColorStop(1, `hsla(${baseHue + 20}, 100%, 60%, 0.9)`);
 
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
       ctx.strokeStyle = gradient;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = isThinking ? 2 : 3;
       ctx.lineCap = "round";
       ctx.stroke();
 
-      // Glow effect
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.strokeStyle = `hsla(185, 100%, 50%, ${0.2 + (value / 255) * 0.3})`;
-      ctx.lineWidth = 8;
-      ctx.lineCap = "round";
-      ctx.stroke();
+      // Glow effect (optimized: only draw for loud bars or specific states)
+      if (value > 100 || isThinking) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.strokeStyle = `hsla(${baseHue}, 100%, 50%, ${0.1 + (value / 255) * 0.2})`;
+        ctx.lineWidth = 6;
+        ctx.lineCap = "round";
+        ctx.stroke();
+      }
     }
 
-    // Draw inner circle
+    // Draw inner circle (Core)
     ctx.beginPath();
-    ctx.arc(centerX, centerY, radius * 0.35, 0, Math.PI * 2);
-    ctx.strokeStyle = "hsla(185, 100%, 50%, 0.3)";
+    ctx.arc(centerX, centerY, radius * 0.4, 0, Math.PI * 2);
+    ctx.strokeStyle = `hsla(${baseHue}, 100%, 50%, 0.3)`;
     ctx.lineWidth = 2;
     ctx.stroke();
 
     // Draw pulsing center
-    const pulseScale = 1 + Math.sin(Date.now() / 500) * (isSpeaking ? 0.25 : 0.1);
+    const pulseScale = 1 + Math.sin(Date.now() / (isThinking ? 200 : 500)) * (isSpeakingState ? 0.3 : 0.1);
     ctx.beginPath();
     ctx.arc(centerX, centerY, radius * 0.15 * pulseScale, 0, Math.PI * 2);
     const centerGradient = ctx.createRadialGradient(
       centerX, centerY, 0,
-      centerX, centerY, radius * 0.15 * pulseScale
+      centerX, centerY, radius * 0.2 * pulseScale
     );
-    centerGradient.addColorStop(0, "hsla(185, 100%, 60%, 0.8)");
-    centerGradient.addColorStop(1, "hsla(185, 100%, 50%, 0.2)");
+    centerGradient.addColorStop(0, `hsla(${baseHue}, 100%, 60%, 0.8)`);
+    centerGradient.addColorStop(1, `hsla(${baseHue}, 100%, 50%, 0.0)`);
     ctx.fillStyle = centerGradient;
     ctx.fill();
 
     animationRef.current = requestAnimationFrame(drawSpectrum);
-  }, [analyser, isListening]);
+  }, [analyser, isListening, isSpeaking, wakeStatus]);
 
   useEffect(() => {
     let raf = 0;
     let lastActive = 0;
-    const silenceTimeout = 700; // ms of silence to consider speech ended
-
-    const startIfNeeded = () => {
-      const mr = mediaRecorderRef.current;
-      if (mr && mr.state === 'inactive') {
-        try {
-          mr.start();
-        } catch (e) {
-          console.warn('MediaRecorder start failed', e);
-        }
-      }
-    };
-
-    const stopIfNeeded = () => {
-      const mr = mediaRecorderRef.current;
-      if (mr && mr.state === 'recording') {
-        try {
-          mr.stop();
-        } catch (e) {
-          console.warn('MediaRecorder stop failed', e);
-        }
-      }
-    };
+    const silenceTimeout = 1200; // ms of silence to consider speech ended
 
     const loop = async () => {
       const a = analyser;
-      if (a) {
+      if (a && isListening) {
         const buffer = new Uint8Array(a.fftSize);
         a.getByteTimeDomainData(buffer);
         let sum = 0;
@@ -200,19 +206,15 @@ export const AudioSpectrum = () => {
           sum += v * v;
         }
         const rms = Math.sqrt(sum / buffer.length);
-        const speaking = rms > 0.02; // threshold - tweak if needed
-        if (speaking) {
+        const userIsSpeaking = rms > 0.02; // threshold
+
+        if (userIsSpeaking) {
           lastActive = Date.now();
-          if (!isSpeaking) {
-            setIsSpeaking(true);
-            startIfNeeded();
-            
-          }
+          if (!isSpeaking) setIsSpeaking(true);
         } else {
           if (isSpeaking && Date.now() - lastActive > silenceTimeout) {
             setIsSpeaking(false);
-            stopIfNeeded();
-            // Speech ended: stop recording and let onstop handler process/upload the blob
+            stopListening();
           }
         }
       }
@@ -228,53 +230,21 @@ export const AudioSpectrum = () => {
     };
   }, [isListening, analyser, isSpeaking]);
 
-  const startListening = useCallback(async () => {
+  /*
+   * Brain Integration: Transcription Logic
+   */
+  const handleTranscription = (text: string) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      const context = new AudioContext();
-      const source = context.createMediaStreamSource(stream);
-      const analyserNode = context.createAnalyser();
-      analyserNode.fftSize = 256;
-      source.connect(analyserNode);
-
-      // Prepare media recorder to capture audio for transcription
-      chunksRef.current = [];
-      if (typeof MediaRecorder !== 'undefined') {
-        try {
-          const options = { mimeType: 'audio/webm;codecs=opus' };
-          const mr = new MediaRecorder(stream, options);
-          mr.ondataavailable = (e: BlobEvent) => {
-            if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-          };
-          mr.onstop = async () => {
-            const audioBlob = new Blob(chunksRef.current, { type: 'audio/webm' });
-            chunksRef.current = [];
-            if (audioBlob.size > 0) {
-              await transcription(audioBlob);
-            }
-            mediaRecorderRef.current = null;
-          };
-          mediaRecorderRef.current = mr;
-          // Recorder will be started/stopped automatically by VAD when speech begins/ends.
-        } catch (err) {
-          console.warn('MediaRecorder not supported or failed to start', err);
-        }
-      }
-
-      setAudioContext(context);
-      setAnalyser(analyserNode);
-      setIsListening(true);
-      setIsTranscribing(false);
-
-    } catch (error) {
-      console.error("Error accessing microphone:", error);
+      brain.handleUserSpeechEnd(text);
+      toast.info(`Heard: "${text}"`);
+    } catch (err) {
+      console.error('Failed to process transcription via Brain', err);
     }
-  }, []);
+  };
 
   const transcription = async (audioBlob: Blob) => {
     if (!url) {
-      toast.error('No server selected for transcription. Please select a server on the Services page.');
+      toast.error('No server selected. Please select a server on the Services page.');
       setIsTranscribing(false);
       return;
     }
@@ -286,82 +256,84 @@ export const AudioSpectrum = () => {
       const response = await fetch(`${url}/api/v1/audio/transcriptions`, {
         method: 'POST',
         body: formData,
-        headers:{
-          "Authorization": `Bearer ${localStorage.getItem("jarvis:token") || ''}`
+        headers: {
+          "Authorization": `Bearer ${localStorage.getItem("jarvis:token") || sessionStorage.getItem("jarvis:token") || ''}`
         }
       });
+
       if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        throw new Error(text || `HTTP error! status: ${response.status}`);
+        const text = await response.json();
+        toast.error("Error during transcription: " + (text.detail || `HTTP error! status: ${response.status}`));
       }
-      const data = await response.json();
-      setTranscription([...transcriptions,data.text]);
-      handleTranscription(data.text);
-      
-      stopListening();
+      else {
+        const data = await response.json();
+
+        // Update global store
+        setTranscription([...transcriptions, { text: data.text, updated: new Date() }]);
+
+        // Notify brain with the text
+        handleTranscription(data.text);
+      }
     } catch (error) {
       console.error("Error during transcription:", error);
+      toast.error("Failed to transcribe audio.");
     } finally {
       setIsTranscribing(false);
     }
   };
-  const handleTranscription = (text: string) => {
-    // Use the shared Communication client to send transcription to backend websocket
+
+  const startListening = useCallback(async () => {
     try {
-      Communication.sendMessage(text);
-    } catch (err) {
-      console.error('Failed to send transcription over websocket', err);
-
-    }
-  };
-  const stopListening = () => {
-    // Stop the media recorder to finalize the audio blob and trigger transcription
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try {
-        // mark as transcribing immediately so UI reflects upload in progress
-        setIsTranscribing(true);
-        mediaRecorderRef.current.stop();
-        setIsSpeaking(false);
-      } catch (err) {
-        console.warn('Error stopping MediaRecorder', err);
+      if (!audioContext) {
+        const context = new AudioContext();
+        setAudioContext(context);
+        return;
       }
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+
+      // Reset chunks for new recording
+      chunksRef.current = [];
+
+      const stream = streamRef.current;
+      if (stream) {
+        const mr = new MediaRecorder(stream);
+        mr.ondataavailable = (e) => {
+          if (e.data.size > 0) chunksRef.current.push(e.data);
+        };
+        mr.onstop = () => {
+          if (chunksRef.current.length > 0) {
+            const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+            transcription(blob);
+          }
+        };
+        mediaRecorderRef.current = mr;
+        mr.start();
+      }
+
+      brain.handleUserSpeechStart();
+      setIsListening(true);
+    } catch (error) {
+      console.error("Error starting listening:", error);
     }
-    if (audioContext) {
-      audioContext.close();
-      setAudioContext(null);
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    setAnalyser(null);
+  }, [audioContext, transcription]);
+
+  const stopListening = useCallback(() => {
     setIsListening(false);
-  }; 
+    setIsSpeaking(false);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state === 'recording') {
+      mr.stop();
+    }
 
-    const resize = () => {
-      const container = canvas.parentElement;
-      if (container) {
-        canvas.width = container.clientWidth;
-        canvas.height = container.clientHeight;
-      }
-    };
-    resize();
-    window.addEventListener("resize", resize);
+    // Note: No longer sending agent_stt_end as we use blob transcription
+  }, []);
 
-    drawSpectrum();
-
-    return () => {
-      window.removeEventListener("resize", resize);
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
-    };
-  }, [drawSpectrum]);
-
+  /* 
+   * Brain Integration: Wake Word
+   */
   useEffect(() => {
     const offHot = WakeWordCommunication.onMessage((msg) => {
       if (typeof msg === 'string') {
@@ -369,177 +341,154 @@ export const AudioSpectrum = () => {
           const data = JSON.parse(msg);
           if (data.event && data.event.toLowerCase() === 'wakeword_detected') {
             setWakeStatus('WAKE WORD DETECTED');
+            brain.handleWakeWordDetected();
             startListening();
           }
-        } catch (e) {
-          console.error('Failed to parse hotword message:', e);
-        }
+        } catch (e) { }
       }
     });
+
     return () => { offHot(); };
   }, [startListening]);
 
-
-  // Subscribe to general websocket messages
+  // Global Mic loop for Hotword & Viz
   useEffect(() => {
-    const off = Communication.onMessage((msg) => {
-      setLastSocketMessage(msg);
-    });
-    return () => { off(); };
-  }, []);
+    let active = true;
+    let stream: MediaStream | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    let scriptNode: ScriptProcessorNode | null = null;
 
-  // Hotword VAD + streaming
-  useEffect(() => {
-    let speaking = false;
-    let lastActive = 0;
-    const hangoverMs = 300;
-    const rmsStart = 0.015;
-    const rmsContinue = 0.01;
-
-    const init = async () => {
+    const run = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        hotwordStreamRef.current = stream;
-        const ctx = new AudioContext();
-        hotwordCtxRef.current = ctx;
-        const src = ctx.createMediaStreamSource(stream);
-        const node = ctx.createScriptProcessor(4096, 1, 1);
-        hotwordNodeRef.current = node;
-        const inputBuf: Float32Array[] = [];
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
 
-        const to16k = (pcm: Float32Array, inRate: number, outRate = 16000) => {
-          if (inRate === outRate) return pcm;
+        const ctx = new AudioContext();
+        setAudioContext(ctx);
+        const anl = ctx.createAnalyser();
+        anl.fftSize = 256;
+        setAnalyser(anl);
+
+        source = ctx.createMediaStreamSource(stream);
+        source.connect(anl);
+
+        // Helper to prepare 16k mono for hotword
+        const downsample = (pcm: Float32Array, inRate: number) => {
+          const outRate = 16000;
           const ratio = inRate / outRate;
           const newLen = Math.round(pcm.length / ratio);
-          const res = new Float32Array(newLen);
-          let idx = 0;
-          let pos = 0;
-          while (idx < newLen) {
-            const nextPos = Math.min(pcm.length, Math.round((idx + 1) * ratio));
-            let sum = 0;
-            let count = 0;
-            while (pos < nextPos) { sum += pcm[pos++]; count++; }
-            res[idx++] = count ? sum / count : 0;
-          }
-          return res;
-        };
-
-        const floatTo16BitPCM = (input: Float32Array) => {
-          const out = new Int16Array(input.length);
-          for (let i = 0; i < input.length; i++) {
-            let s = Math.max(-1, Math.min(1, input[i]));
+          const out = new Int16Array(newLen);
+          for (let i = 0; i < newLen; i++) {
+            const idx = Math.round(i * ratio);
+            let s = Math.max(-1, Math.min(1, pcm[idx]));
             out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
           }
           return out;
         };
 
-        const wavHeader = (numSamples: number, sampleRate = 16000, numChannels = 1) => {
-          const blockAlign = numChannels * 2;
-          const byteRate = sampleRate * blockAlign;
-          const dataSize = numSamples * 2;
-          const buffer = new ArrayBuffer(44 + dataSize);
-          const view = new DataView(buffer);
+        scriptNode = ctx.createScriptProcessor(4096, 1, 1);
+        scriptNode.onaudioprocess = (e) => {
+          if (!active) return;
+          const input = e.inputBuffer.getChannelData(0);
+          const state = brain.getState();
 
-          const writeStr = (off: number, s: string) => {
-            for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
-          };
-
-          writeStr(0, 'RIFF');
-          view.setUint32(4, 36 + dataSize, true);
-          writeStr(8, 'WAVE');
-          writeStr(12, 'fmt ');
-          view.setUint32(16, 16, true);
-          view.setUint16(20, 1, true);
-          view.setUint16(22, numChannels, true);
-          view.setUint32(24, sampleRate, true);
-          view.setUint32(28, byteRate, true);
-          view.setUint16(32, blockAlign, true);
-          view.setUint16(34, 16, true);
-          writeStr(36, 'data');
-          view.setUint32(40, dataSize, true);
-          return view;
-        };
-
-        const flushAndSend = () => {
-          const merged = concatFloat32(inputBuf);
-          inputBuf.length = 0;
-          if (merged.length === 0) return;
-          const pcm16 = floatTo16BitPCM(merged);
-          const header = wavHeader(pcm16.length);
-          const wav = new Uint8Array(header.buffer.byteLength);
-          for (let i = 0; i < 44; i++) wav[i] = header.getUint8(i);
-          const body = new Uint8Array(pcm16.buffer);
-          const final = new Uint8Array(44 + body.length);
-          final.set(wav, 0);
-          final.set(body, 44);
-          WakeWordCommunication.sendBytes(final.buffer);
-        };
-
-        const concatFloat32 = (chunks: Float32Array[]) => {
-          let total = 0;
-          for (const c of chunks) total += c.length;
-          const res = new Float32Array(total);
-          let off = 0;
-          for (const c of chunks) { res.set(c, off); off += c.length; }
-          return res;
-        };
-
-        node.onaudioprocess = (e) => {
-          if (!hotwordListeningRef.current) return;
-          const ch = e.inputBuffer.getChannelData(0);
-          const down = to16k(ch, ctx.sampleRate, 16000);
-          let sum = 0;
-          for (let i = 0; i < down.length; i++) { const v = down[i]; sum += v * v; }
-          const rms = Math.sqrt(sum / down.length);
-          const now = performance.now();
-
-          if (!speaking) {
-            if (rms > rmsStart) {
-              speaking = true;
-              lastActive = now;
-              inputBuf.push(down.slice());
-            }
-          } else {
-            if (rms > rmsContinue) {
-              lastActive = now;
-              inputBuf.push(down.slice());
-            } else {
-              if (now - lastActive > hangoverMs) {
-                speaking = false;
-                flushAndSend();
-              } else {
-                inputBuf.push(down.slice());
-              }
-            }
+          if (state === AssistantState.IDLE) {
+            const pcm16 = downsample(input, ctx.sampleRate);
+            WakeWordCommunication.sendBytes(pcm16.buffer);
           }
         };
 
-        src.connect(node);
-        node.connect(ctx.destination);
-        hotwordListeningRef.current = true;
-        setWakeStatus('AWAITING WAKE WORD');
-      } catch (e) {
-        console.error('Hotword init failed', e);
+        source.connect(scriptNode);
+        scriptNode.connect(ctx.destination);
+      } catch (err) {
+        console.error("Failed to init mic loop:", err);
       }
     };
 
-    init();
+    run();
     return () => {
-      hotwordListeningRef.current = false;
-      if (hotwordNodeRef.current) {
-        try { hotwordNodeRef.current.disconnect(); } catch {}
-        hotwordNodeRef.current = null;
-      }
-      if (hotwordCtxRef.current) {
-        try { hotwordCtxRef.current.close(); } catch {}
-        hotwordCtxRef.current = null;
-      }
-      if (hotwordStreamRef.current) {
-        try { hotwordStreamRef.current.getTracks().forEach(t => t.stop()); } catch {}
-        hotwordStreamRef.current = null;
-      }
+      active = false;
+      if (scriptNode) scriptNode.disconnect();
+      if (source) source.disconnect();
+      if (stream) stream.getTracks().forEach(t => t.stop());
     };
   }, []);
+
+  // Sync isListening with Brain state
+  const brainState = useBrainState((s) => s.currentState);
+  useEffect(() => {
+    if (brainState === AssistantState.LISTENING) {
+      setIsListening(true);
+    } else {
+      setIsListening(false);
+    }
+  }, [brainState]);
+
+  // Subscribe to binary messages (TTS audio)
+  useEffect(() => {
+    const offBinary = AgentCommunication.onBinary((data) => {
+      if (data instanceof ArrayBuffer) {
+        brain.handleIncomingAudio(data);
+      } else if (data instanceof Blob) {
+        data.arrayBuffer().then(b => brain.handleIncomingAudio(b));
+      }
+    });
+    return () => { offBinary(); };
+  }, []);
+
+  // Listen for real-time events for dialogs
+  useEffect(() => {
+    const offMsg = AgentCommunication.onMessage((msg) => {
+      try {
+        const data = JSON.parse(msg);
+        if (data.type === 'clarification_required') {
+          setClarificationReq({
+            task_id: data.task_id,
+            question: data.payload.question_text
+          });
+          // Speak the question
+          // (In a fuller version, backend might stream this, but here we can use simple speech synthesis or just let the user read)
+        } else if (data.type === 'system_permission_required') {
+          setPermissionReq({
+            task_id: data.task_id,
+            summary: data.payload.command_summary,
+            operation: data.payload.exact_operation,
+            risk: data.payload.risk_level
+          });
+        } else if (data.type === 'system_permission_ack' || data.type === 'agent_clarification_ack') {
+          if (data.success) {
+            setClarificationReq(null);
+            setPermissionReq(null);
+          }
+        }
+      } catch (e) { }
+    });
+    return () => { offMsg(); };
+  }, []);
+
+  const handleClarificationResponse = (response: string) => {
+    if (clarificationReq) {
+      AgentCommunication.sendJSON({
+        type: "agent_clarification_response",
+        payload: {
+          task_id: clarificationReq.task_id,
+          response: response
+        }
+      });
+    }
+  };
+
+  const handlePermissionResponse = (approved: boolean) => {
+    if (permissionReq) {
+      AgentCommunication.sendJSON({
+        type: "system_permission_response",
+        payload: {
+          task_id: permissionReq.task_id,
+          response: approved ? "approved" : "denied"
+        }
+      });
+    }
+  };
 
   return (
     <div className="relative flex flex-col items-center">
@@ -559,7 +508,6 @@ export const AudioSpectrum = () => {
         </motion.div>
       </div>
 
-      {/* Status text */}
       <motion.div
         className="mt-4 text-center"
         initial={{ opacity: 0 }}
@@ -568,6 +516,88 @@ export const AudioSpectrum = () => {
       >
         <ListeningAnimation isTranscribing={isTranscribing} isListening={isListening} />
       </motion.div>
+
+      {agentResponse && (
+        <motion.div
+          className="mt-4 p-3 bg-jarvis-dark/50 border border-jarvis-cyan/30 rounded-lg max-w-xs text-center text-sm"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+        >
+          <div className="font-medium text-primary">Agent Response:</div>
+          <div className="text-muted-foreground truncate">
+            {agentResponse.status === 'completed' && agentResponse.result?.summary
+              ? agentResponse.result.summary.substring(0, 100) + (agentResponse.result.summary.length > 100 ? '...' : '')
+              : agentResponse.status === 'failed' && agentResponse.error
+                ? `Error: ${agentResponse.error.substring(0, 100)}${agentResponse.error.length > 100 ? '...' : ''}`
+                : 'Processing...'}
+          </div>
+        </motion.div>
+      )}
+
+      {/* Clarification Dialog */}
+      {clarificationReq && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-jarvis-dark border border-primary/40 p-6 rounded-xl max-w-md w-full shadow-2xl glow-border"
+          >
+            <h3 className="text-xl font-orbitron text-primary mb-4">CLARIFICATION REQUIRED</h3>
+            <p className="text-foreground/90 mb-6">{clarificationReq.question}</p>
+            <div className="flex flex-col gap-3">
+              <div className="p-2 border border-dashed border-primary/20 rounded text-xs text-muted-foreground text-center">
+                Please respond via voice or type below
+              </div>
+              <input
+                type="text"
+                className="bg-jarvis-black border border-primary/20 p-2 rounded text-sm focus:border-primary outline-none"
+                placeholder="Your response..."
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleClarificationResponse(e.currentTarget.value);
+                }}
+              />
+              <JarvisButton variant="primary" onClick={() => {
+                const input = document.querySelector('input') as HTMLInputElement;
+                handleClarificationResponse(input.value);
+              }}>
+                SUBMIT RESPONSE
+              </JarvisButton>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Permission Dialog */}
+      {permissionReq && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-jarvis-dark border border-orange-500/40 p-6 rounded-xl max-w-md w-full shadow-2xl glow-border"
+          >
+            <h3 className="text-xl font-orbitron text-orange-500 mb-2">SECURITY PERMISSION</h3>
+            <div className="mb-4 text-sm">
+              <div className="text-muted-foreground mb-1">Action Summary:</div>
+              <div className="font-semibold">{permissionReq.summary}</div>
+            </div>
+            <div className="mb-4 text-xs bg-black/40 p-2 rounded font-mono break-all">
+              {permissionReq.operation}
+            </div>
+            <div className={`mb-6 text-xs font-bold ${permissionReq.risk === 'high' ? 'text-red-500' : 'text-orange-400'}`}>
+              RISK LEVEL: {permissionReq.risk.toUpperCase()}
+            </div>
+            <div className="flex gap-4">
+              <JarvisButton variant="orange" className="flex-1" onClick={() => handlePermissionResponse(true)}>
+                APPROVE
+              </JarvisButton>
+              <JarvisButton variant="danger" className="flex-1" onClick={() => handlePermissionResponse(false)}>
+                DENY
+              </JarvisButton>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 };

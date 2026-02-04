@@ -5,24 +5,28 @@ const bonjour = require('bonjour')();
 const app = express();
 app.use(cors());
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 11852;
 // By default do not filter services server-side so we show all discovered services in the UI.
 // You may set SERVICE_NAME env var to enable a default filter (e.g. SERVICE_NAME=J.A.R.V.I.S.)
 const SERVICE_NAME_FILTER = process.env.SERVICE_NAME || '';
 
 const services = new Map();
 
-console.log('Discovery initialized. Service name filter:', SERVICE_NAME_FILTER || '<none>');
 
 function serviceId(s) {
   return `${s.fqdn || s.host || s.name}:${s.port || ''}`;
 }
 
-const browser = bonjour.find({});
+// Initialize the service browser with proper error handling and continuous discovery
+const browser = bonjour.find({}, (error) => {
+  if (error) {
+    return;
+  }
+});
 
+// Listen for services coming online
 browser.on('up', (service) => {
   if (!service) {
-    console.warn('Bonjour emitted "up" with undefined service');
     return;
   }
   const id = serviceId(service);
@@ -38,17 +42,14 @@ browser.on('up', (service) => {
     protocol: service.protocol,
     updatedAt: new Date().toISOString(),
   });
-  console.log('Service up', service.name || '<unknown>', id);
 });
 
 browser.on('down', (service) => {
   if (!service) {
-    console.warn('Bonjour emitted "down" with undefined service');
     return;
   }
   const id = serviceId(service);
   services.delete(id);
-  console.log('Service down', service.name || '<unknown>', id);
 });
 
 app.get('/api/servers', (req, res) => {
@@ -62,6 +63,53 @@ app.get('/api/servers', (req, res) => {
   }
   res.json(list);
 });
+
+// Endpoint to manually trigger service discovery
+app.post('/api/refresh', (req, res) => {
+  probeForServices();
+  res.json({ message: 'Service discovery refresh triggered' });
+});
+
+// Function to manually trigger a service scan to discover any missed services
+function probeForServices() {
+  console.log('Probing for new services...');
+  // Create a temporary browser to force a fresh scan
+  const tempBrowser = bonjour.find({});
+  
+  // Listen for services during the probe
+  tempBrowser.on('up', (service) => {
+    if (!service) {
+      console.warn('Probe detected undefined service');
+      return;
+    }
+    const id = serviceId(service);
+    // Only add if not already known
+    if (!services.has(id)) {
+      services.set(id, {
+        id,
+        name: service.name || '<unknown>',
+        fqdn: service.fqdn,
+        host: service.host,
+        port: service.port,
+        addresses: service.addresses || [],
+        txt: service.txt || {},
+        type: service.type,
+        protocol: service.protocol,
+        updatedAt: new Date().toISOString(),
+      });
+      console.log('Discovered via probe', service.name || '<unknown>', id);
+    }
+  });
+  
+  // Stop the temporary browser after 5 seconds
+  setTimeout(() => {
+    tempBrowser.stop();
+    console.log('Service probe completed');
+  }, 5000);
+}
+
+// Probe for services every 30 seconds to catch any that were missed
+setInterval(probeForServices, 30000);
 
 app.get('/health', (req, res) => res.json({ ok: true, count: services.size }));
 

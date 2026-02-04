@@ -8,34 +8,49 @@ import Dashboard from "./pages/Dashboard";
 import NotFound from "./pages/NotFound";
 import ServerService from "./pages/ServerService";
 import AuthGuard from "./components/AuthGurad";
+import { Home } from "./pages/Home";
+import { brain } from './brain';
+import { useEffect } from "react";
+import { VoiceControls } from "./components/VoiceControls";
+
 
 const queryClient = new QueryClient();
 
-const App = () => (
-  
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner 
-        theme="dark"
-        toastOptions={{
-          className: "glass-panel border-jarvis-cyan/30",
-        }}
-      />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/services" element={<ServerService />} />
-        
-          <Route element={<AuthGuard /> }>
-            <Route path="/login" element={<Login />} />
-            <Route path="/" element={<Dashboard />} />
-          </Route>
-        
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
-);
+function App() {
+  useEffect(() => {
+    brain.initialize();
+  }, []);
+
+  return (
+
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <VoiceControls />
+        <Toaster />
+        <Sonner
+          theme="dark"
+          toastOptions={{
+            className: "glass-panel border-jarvis-cyan/30",
+          }}
+        />
+        <BrowserRouter>
+          <Routes>
+            <Route path="/services" element={<ServerService />} />
+
+            <Route element={<AuthGuard />}>
+              <Route path="/login" element={<Login />} />
+              <Route path="/" element={<Dashboard />}>
+                <Route index element={<Home />} />
+              </Route>
+            </Route>
+
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+
+}
 
 export default App;

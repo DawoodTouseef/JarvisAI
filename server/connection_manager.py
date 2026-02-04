@@ -49,6 +49,20 @@ class ConnectionManager:
             except ValueError:
                 pass
     
+    async def send_personal_bytes(self, data: bytes, websocket: WebSocket):
+        """Send binary message - handle closed sockets gracefully"""
+        try:
+            if websocket not in self.active_connections:
+                return
+            await websocket.send_bytes(data)
+        except Exception as e:
+            logger.debug("WebSocket binary send failed: %s", e)
+            try:
+                if websocket in self.active_connections:
+                    self.active_connections.remove(websocket)
+            except ValueError:
+                pass
+
     def disconnect(self, websocket: WebSocket):
         """disconnect event"""
         try:

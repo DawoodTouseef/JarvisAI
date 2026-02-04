@@ -1,32 +1,72 @@
-from fastapi import FastAPI,WebSocket,WebSocketDisconnect, APIRouter
-from connection_manager import ConnectionManager
+import warnings
+import logging
+import os
+# Suppress websockets and other library deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
+
+# Configure centralized logging
+# Use environment variable to control log level (default: INFO for production)
+log_level = os.getenv('JARVIS_LOG_LEVEL', 'INFO').upper()
+logging.basicConfig(
+    level=getattr(logging, log_level, logging.INFO),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from server.connection_manager import ConnectionManager
 import psutil
 import asyncio
 import pynvml
 import time
 import pocketsphinx
 from os.path import join as pathjoin
-from settings import settings_manager
+from server.settings import settings_manager
 import json
 from datetime import datetime
 from deepface import DeepFace as df  
 from pathlib import Path
+from server.config import jarvis_cache
+
+from server.database.database import engine, Base
+from server.database.models import *  # Import models so they register with Base
+
 
 JARVIS_DIR = Path(__file__).resolve().parent
 
 # Create faces directory if it doesn't exist
-faces_dir = JARVIS_DIR / "faces"
+faces_dir = os.path.join( jarvis_cache, "faces" )
 
-print("Creating faces directory if it doesn't exist...", faces_dir)
-faces_dir.mkdir(parents=True, exist_ok=True)
+logger.info("Creating faces directory if it doesn't exist... %s", faces_dir)
+os.makedirs(faces_dir,exist_ok=True)
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    logger.info("Starting up JARVIS backend...")
+    logger.info("Initializing database tables...")
+    Base.metadata.create_all(bind=engine)
+    yield
+    # Shutdown logic
+    logger.info("Shutting down JARVIS backend...")
+    try:
+        settings_manager.close()
+        # Also close the task manager's database
+    except Exception as e:
+        logger.error("Error during shutdown: %s", e)
+
 app = FastAPI(
     title="Jarvis websocket server",
-    lifespan=None,
+    lifespan=lifespan,
     docs_url="/docs",
 )
 
 
 manager = ConnectionManager()
+
+# Initialize agent integration
 
 pynvml.nvmlInit()
 
@@ -44,7 +84,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 parsed_data = json.loads(data)
                 if isinstance(parsed_data, dict):
                     message_type = parsed_data.get('type')
-                    print(f"Received message type: {message_type}")
+                    logger.debug("Received message type: %s", message_type)
                     if message_type == 'get_settings':
                         # Return current settings
                         settings = settings_manager.get_settings()
@@ -161,13 +201,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             
                             
                             # Create faces directory if it doesn't exist
-                            faces_dir = "./faces"
+                            faces_dir = "faces"
                             os.makedirs(faces_dir, exist_ok=True)
                             
                             # Generate unique filename
                             file_extension = model_data.get('extension', '.jpg')
                             filename = f"{uuid.uuid4()}{file_extension}"
-                            file_path = os.path.join(faces_dir, filename)
+                            file_path = os.path.join(jarvis_cache,faces_dir, filename)
                             
                             # Save the image file
                             with open(file_path, 'wb') as f:
@@ -223,8 +263,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 }
                 await manager.send_personal_message(json.dumps(response), websocket)
             except Exception as e:
-                print(f"Error sending echo response: {e}")
-    except WebSocketDisconnect:
+                logger.error("Error sending echo response: %s", e)
+    except (WebSocketDisconnect, RuntimeError):
         # Remove disconnected socket from active list if present
         manager.disconnect(websocket)
         # Safely notify remaining connected clients that one has disconnected
@@ -279,32 +319,25 @@ async def send_info(websocket: WebSocket):
             import json 
             await manager.send_personal_message(json.dumps({"CPU": cpu, "Memory": memory, "Network": net, "GPU": gpu,"UP_TIME":up_time}), websocket)
             await asyncio.sleep(5)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         manager.disconnect(websocket)
 
 
 def create_decoder():
-    config = pocketsphinx.Decoder.default_config()
-    config.set_string("-hmm", pathjoin(MODEL_PATH, "en-us", "en-us"))
-    config.set_string("-dict", pathjoin(MODEL_PATH, "en-us", "cmudict-en-us.dict"))
-    config.set_float("-kws_threshold", 1e-40)
-    config.set_boolean("-logfn", False)
-    
-    decoder = pocketsphinx.Decoder(config)
-    # Configure keyphrase search after decoder creation
-    try:
-        decoder.set_keyphrase('wakeup', 'jarvis')
-        decoder.set_search('wakeup')
-        print("Decoder configured with keyphrase search for 'jarvis'")
-    except Exception as e:
-        print(f"Failed to set keyphrase: {e}")
-    
+    # Using modern PocketSphinx 5.0.4 API for cleaner initialization
+    decoder = pocketsphinx.Decoder(
+        hmm=pathjoin(MODEL_PATH, "en-us", "en-us"),
+        dict=pathjoin(MODEL_PATH, "en-us", "cmudict-en-us.dict"),
+        keyphrase="jarvis",
+        kws_threshold=1e-20,
+        logfn=os.devnull
+    )
     return decoder
 
 @app.websocket("/face_recognition")
 async def face_recognition_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    print("Face Recognition WebSocket connected")
+    logger.info("Face Recognition WebSocket connected")
     
     try:
         while True:
@@ -314,7 +347,7 @@ async def face_recognition_endpoint(websocket: WebSocket):
                 parsed_data = json.loads(data)
                 if isinstance(parsed_data, dict):
                     action = parsed_data.get('action')
-                    print(f"Face recognition action: {action}")
+                    logger.debug("Face recognition action: %s", action)
                     
                     if action == 'get_models':
                         # Get all face recognition models
@@ -344,7 +377,7 @@ async def face_recognition_endpoint(websocket: WebSocket):
                         # Generate unique filename
                         file_extension = model_data.get('extension', '.jpg')
                         filename = f"{uuid.uuid4()}{file_extension}"
-                        file_path = os.path.join(faces_dir, filename)
+                        file_path = os.path.join(jarvis_cache,faces_dir, filename)
                         
                         # Save the image file
                         with open(file_path, 'wb') as f:
@@ -398,17 +431,17 @@ async def face_recognition_endpoint(websocket: WebSocket):
                         await manager.send_personal_message(json.dumps(response), websocket)
                         
             except json.JSONDecodeError as e:
-                print(f"JSON decode error: {e}")
+                logger.error("JSON decode error: %s", e)
                 response = {
                     'type': 'face_recognition_error',
                     'error': 'Invalid JSON format'
                 }
                 await manager.send_personal_message(json.dumps(response), websocket)
                 
-    except WebSocketDisconnect:
-        print("Face Recognition WebSocket disconnected")
+    except (WebSocketDisconnect, RuntimeError):
+        logger.info("Face Recognition WebSocket disconnected")
     except Exception as e:
-        print(f"Face Recognition WebSocket error: {e}")
+        logger.error("Face Recognition WebSocket error: %s", e)
     finally:
         manager.disconnect(websocket)
 
@@ -416,36 +449,30 @@ async def face_recognition_endpoint(websocket: WebSocket):
 @app.websocket("/hotword")
 async def hotword(websocket: WebSocket):
     await manager.connect(websocket)
-    print("Hotword WebSocket connected")
+    logger.info("Hotword WebSocket connected")
     
     decoder = create_decoder()
     decoder.start_utt()
     import json
-    import wave
-    from io import BytesIO
     
     try:
         while True:
             data = await websocket.receive_bytes()
-            print(f"Received {len(data)} bytes")
+            logger.debug("Received %d bytes", len(data))
             
             try:
-                # Parse WAV file from received bytes
-                wav_file = BytesIO(data)
-                with wave.open(wav_file, 'rb') as wf:
-                    frames = wf.readframes(wf.getnframes())
-                
-                # Process audio
-                decoder.process_raw(frames, False, False)
+                # The frontend sends raw PCM bytes (Int16, 16kHz, Mono)
+                # No longer using wave.open as it requires a RIFF header
+                decoder.process_raw(data, False, False)
                 
                 hyp = decoder.hyp()
                 if hyp and hyp.hypstr:
                     best_score = hyp.best_score 
                     hyp_str = hyp.hypstr.lower()
-                    print(f"Decoder hypothesis score: {best_score}")
-                    print(f"Decoder hypothesis: {hyp_str}")
+                    logger.debug("Decoder hypothesis score: %s", best_score)
+                    logger.debug("Decoder hypothesis: %s", hyp_str)
                     if 'jarvis' in hyp_str and best_score > 1e-40:
-                        print("Wake word 'jarvis' detected!")
+                        logger.info("Wake word 'jarvis' detected!")
                         try:
                             await manager.send_personal_message(
                                 json.dumps({"event": "wakeword_detected", "word": hyp_str}), 
@@ -459,18 +486,17 @@ async def hotword(websocket: WebSocket):
                         decoder.start_utt()
                 
             except Exception as e:
-                print(f"Error processing audio: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.exception("Error processing audio: %s", e)
     
-    except WebSocketDisconnect:
-        print("Hotword WebSocket disconnected")
+    except (WebSocketDisconnect, RuntimeError):
+        logger.info("Hotword WebSocket disconnected")
         manager.disconnect(websocket)
     finally:
         try:
             decoder.end_utt()
         except:
             pass
+
 @app.websocket("/face-verification")
 async def face_verification(websocket: WebSocket):
     await manager.connect(websocket)
@@ -478,12 +504,144 @@ async def face_verification(websocket: WebSocket):
         while True:
             data = await websocket.receive_bytes()
             from io import BytesIO
-            dfs = df.find(BytesIO(data), db_path="")
-            print(dfs)
+            dfs = df.find(BytesIO(data), db_path=faces_dir)
+            logger.debug("Face verification result: %s", dfs)
             
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         manager.disconnect(websocket)
+
+@app.websocket("/voice-assistant")
+async def voice_assistant_websocket(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time voice assistant.
+    
+    Uses OrchestratorSession for strict protocol compliance.
+    One orchestrator instance per connection.
+    """
+    from server.orchestrator_session import OrchestratorSession
+    
+    await manager.connect(websocket)
+    logger.info("Voice Assistant WebSocket connected")
+    
+    # Create send callback for this WebSocket
+    async def send_to_websocket(message: dict):
+        """Send message to WebSocket as JSON."""
+        try:
+            await manager.send_personal_message(json.dumps(message), websocket)
+        except Exception as e:
+            logger.error(f"Error sending message to WebSocket: {e}")
+    
+    # Create orchestrator session for this connection
+    session = OrchestratorSession(
+        session_id=f"ws_{id(websocket)}",
+        websocket_send_callback=send_to_websocket
+    )
+    
+    try:
+        while True:
+            # Receive text message
+            data = await websocket.receive_text()
+            
+            try:
+                parsed_data = json.loads(data)
+                message_type = parsed_data.get("type")
+                payload = parsed_data.get("payload", {})
+                
+                logger.debug(f"Voice Assistant received: {message_type}")
+                
+                # Route messages according to strict protocol
+                if message_type == "user_query":
+                    # Handle user query
+                    text = payload.get("text")
+                    auth_token = payload.get("auth_token") or os.getenv("OPENAI_API_KEY")
+                    base_url = payload.get("base_url") or os.getenv("OPENAI_API_BASE")
+                    
+                    if text:
+                        task_id = await session.handle_user_query(
+                            text=text,
+                            auth_token=auth_token,
+                            base_url=base_url,
+                            request_id=parsed_data.get("request_id")
+                        )
+                        
+                        # Send acknowledgement
+                        await send_to_websocket({
+                            "type": "user_query_ack",
+                            "task_id": task_id,
+                            "request_id": parsed_data.get("request_id"),
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    else:
+                        raise ValueError("Query text is required")
+                
+                elif message_type == "clarification_response":
+                    # Handle clarification response
+                    task_id = payload.get("task_id")
+                    response_text = payload.get("text")
+                    
+                    if task_id and response_text:
+                        await session.handle_clarification_response(task_id, response_text)
+                    else:
+                        raise ValueError("task_id and text are required")
+                
+                elif message_type == "permission_response":
+                    # Handle permission response
+                    task_id = payload.get("task_id")
+                    approved = payload.get("approved", False)
+                    
+                    if task_id is not None:
+                        await session.handle_permission_response(task_id, approved)
+                    else:
+                        raise ValueError("task_id is required")
+                
+                elif message_type == "interrupt":
+                    # Handle interrupt
+                    task_id = parsed_data.get("task_id")
+                    if task_id:
+                        await session.handle_interrupt(task_id)
+                
+                elif message_type == "cancel_task":
+                    # Handle task cancellation
+                    task_id = payload.get("task_id")
+                    if task_id:
+                        await session.handle_cancel_task(task_id)
+                
+                else:
+                    # Unknown message type
+                    logger.warning(f"Unknown message type: {message_type}")
+                    await send_to_websocket({
+                        "type": "error",
+                        "message": f"Unknown message type: {message_type}",
+                        "timestamp": datetime.now().isoformat()
+                    })
+            
+            except json.JSONDecodeError:
+                await send_to_websocket({
+                    "type": "error",
+                    "message": "Invalid JSON format",
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception as e:
+                logger.exception(f"Error processing voice assistant message: {e}")
+                await send_to_websocket({
+                    "type": "error",
+                    "message": str(e),
+                    "timestamp": datetime.now().isoformat()
+                })
+    
+    except (WebSocketDisconnect, RuntimeError):
+        logger.info("Voice Assistant WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"Voice Assistant WebSocket error: {e}")
+    finally:
+        # Clean up session
+        await session.disconnect()
+        manager.disconnect(websocket)
+        logger.info("Voice Assistant session cleaned up")
+
+
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

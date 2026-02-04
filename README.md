@@ -1,212 +1,194 @@
-# Jarvis Console
+# JarvisAI
 
-An AI-powered console application inspired by JARVIS from Marvel's Iron Man, designed to provide an interactive, voice-controlled interface for managing tasks, accessing information, and controlling smart systems.
+An advanced, agentic AI console application inspired by JARVIS. This system features a hybrid architecture combining a high-performance React/Electron frontend with a powerful Python FastAPI backend, capable of voice interaction, face recognition, and complex autonomous task execution through a multi-agent orchestration system.
 
-## Features
+## 🚀 Features
 
-- **Voice Recognition**: Wake word detection ("Jarvis") with real-time audio processing
-- **Interactive Dashboard**: Modern React-based UI with 3D visualizations and widgets
-- **System Monitoring**: Real-time CPU, memory, GPU, and network stats
-- **WebSocket Communication**: Bidirectional communication between frontend and backend
-- **LLM Integration**: Support for various AI models via Ollama and OpenAI
-- **Customizable Widgets**: Calendar, weather, news, and quick actions
-- **Audio Visualization**: Real-time spectrum analysis for audio input
+*   **Agentic Capabilities**: A central orchestrator managing specialized sub-agents (Web Search, Deep Search, Code Interpreter) to solve complex tasks.
+*   **Real-time Voice Interaction**: Hotword detection ("Jarvis") using PocketSphinx and real-time transcription.
+*   **Computer Vision**: Face recognition and verification using DeepFace.
+*   **System Telemetry**: Real-time visualization of CPU, GPU, Memory, and Network usage.
+*   **Modern UI**: Sci-fi inspired dashboard built with React, Tailwind CSS, and Radix UI.
+*   **Cross-Platform**: Runs as a desktop application via Electron.
 
-## Architecture
+## 🏗️ System Architecture
 
-### Frontend
-- **Framework**: React 18 with TypeScript
-- **Build Tool**: Vite
-- **Styling**: Tailwind CSS with shadcn/ui components
-- **3D Graphics**: Three.js with React Three Fiber
-- **State Management**: Zustand
-- **Audio Processing**: Web Audio API with WaveSurfer.js
+The application follows a client-server architecture wrapped in Electron for desktop integration.
 
-### Backend
-- **Framework**: FastAPI with WebSockets
-- **Speech Recognition**: PocketSphinx for hotword detection
-- **AI Integration**: Autogen agents, OpenAI API, Ollama
-- **System Monitoring**: psutil, pynvml for hardware stats
-- **Concurrency**: asyncio for async operations
+```mermaid
+graph TD
+    subgraph Client [Frontend (Electron/React)]
+        E[Electron Main Process]
+        R[React Renderer Process]
+        
+        subgraph UI [User Interface]
+            Dashboard[Dashboard Components]
+            Stores[Zustand State Stores]
+            WS_Client[WebSocket Client]
+        end
+        
+        E -->|Spawns| R
+        R --> Dashboard
+        Dashboard <--> Stores
+        Stores <--> WS_Client
+    end
 
-## Installation
+    subgraph Server [Backend (Python/FastAPI)]
+        P[Python Process]
+        API[FastAPI App]
+        CM[Connection Manager]
+        
+        subgraph Core_Services [Core Services]
+            Hotword[Hotword Service]
+            Face[Face Recognition]
+            Settings[Settings Manager]
+        end
+        
+        subgraph Agent_System [Agent System]
+            Orch[Central Orchestrator]
+            TaskMgr[Task Manager]
+            SubAgents[Sub-Agents]
+        end
+        
+        P --> API
+        API <-->|WebSockets| CM
+        CM <--> Core_Services
+        CM <--> Agent_System
+        Orch --> TaskMgr
+        TaskMgr --> SubAgents
+    end
 
-### Prerequisites
-- Node.js 18+
-- Python 3.8+
-- Git
-- For desktop builds: Electron and electron-builder
-- For mobile builds: Android Studio (for Android), Xcode (for iOS)
-
-### Frontend Setup
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd jarvis-console
-
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev
+    E -->|Spawns & Manages| P
+    WS_Client <==>|ws://localhost:8000| API
 ```
 
-The frontend will be available at `http://localhost:5173`
+## 🔄 Data Flow
 
-### Backend Setup
+The following diagram illustrates how a user request involves the detailed interaction between the frontend and the agentic backend.
 
+```mermaid
+sequenceDiagram
+    participant User
+    participant FE as Frontend (React)
+    participant BE as Backend (FastAPI)
+    participant Orch as Orchestrator
+    participant Agent as Specific Agent
+
+    Note over User, FE: User Interaction
+    User->>FE: Voice Command / Text Input
+    FE->>BE: WebSocket (agent_task_submit)
+    
+    Note over BE, Orch: Task Routing
+    BE->>Orch: Submit Task Payload
+    Orch->>Orch: Parse & Create Task ID
+    Orch-->>BE: Task Created (Ack)
+    BE-->>FE: Task Submitted (Task ID)
+
+    Note over Orch, Agent: Execution Loop
+    loop Agent Execution
+        Orch->>Agent: Assign Task
+        Agent->>Agent: Execute (Thinking/Searching)
+        Agent-->>Orch: Intermediate Status/Result
+        Orch-->>BE: Event (task_update/completed)
+        BE-->>FE: WebSocket (agent_response)
+        FE-->>User: UI Update / Voice Feedback
+    end
+```
+
+## 🛠️ Tech Stack
+
+### Frontend
+*   **Core**: React 18, TypeScript, Vite
+*   **Wrapper**: Electron
+*   **Styling**: Tailwind CSS, Shadcn/UI, Framer Motion
+*   **State Management**: Zustand
+*   **Visualization**: Three.js (@react-three/fiber)
+*   **Communication**: Native WebSockets
+
+### Backend
+*   **Core**: Python 3.8+, FastAPI
+*   **Server**: Uvicorn
+*   **AI/ML**:
+    *   `PocketSphinx` (Hotword)
+    *   `DeepFace` (Vision)
+    *   `LangChain` / `AutoGen` (Agent concepts)
+*   **System**: `psutil`, `pynvml` (NVIDIA GPU stats)
+
+## 📂 Project Structure
+
+```bash
+JarvisAI/
+├── electron.js             # Electron main process entry point
+├── package.json            # Node dependencies and scripts
+│
+├── src/                    # Frontend Source
+│   ├── components/         # Reusable React components
+│   ├── pages/              # Main application views
+│   ├── stores/             # Zustand state stores (transcription, video, etc.)
+│   ├── lib/                # Utilities & WebSocket client
+│   └── hooks/              # Custom React hooks
+│
+├── server/                 # Backend Source
+│   ├── main.py             # FastAPI entry point & WebSocket routes
+│   ├── agents/             # Agent implementations
+│   │   ├── central_orchestrator.py  # Main agent coordinator
+│   │   └── system_agent_wrapper.py  # System-level controls
+│   ├── agent_integration.py # Bridges WebSockets with Agent Orchestrator
+│   ├── connection_manager.py # Manages active WebSocket connections
+│   └── settings.py         # App configuration management
+│
+└── requirements.txt        # Python dependencies
+```
+
+## ⚡ Setup & Installation
+
+### Prerequisites
+*   Node.js (v18+)
+*   Python (v3.10+)
+*   Visual Studio Build Tools (for C++ compilation required by some Python libs)
+
+### 1. Frontend Setup
+```bash
+# Install Node dependencies
+npm install
+```
+
+### 2. Backend Setup
 ```bash
 # Navigate to server directory
 cd server
 
 # Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+python -m venv venv
+.\venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Start the server
-python main.py
+# Install Python dependencies
+pip install -r ../requirements.txt
 ```
 
-The backend API will be available at `http://localhost:8000`
+## 🏃 Running the Application
 
-## Building Cross-Platform Applications
-
-This application can be built for multiple platforms using Electron (desktop) and Capacitor (mobile).
-
-### Desktop Builds (Windows, Mac, Linux)
-
+### Development Mode (Concurrent)
+Run both the frontend (Vite) and backend (Python) servers simultaneously:
 ```bash
-# Install dependencies
-npm install
-
-# Build the Python server executable
-npm run build:server
-
-# Build for specific platforms
-npm run electron:build:win    # Windows
-npm run electron:build:mac    # Mac
-npm run electron:build:linux  # Linux
-
-# Or build for all platforms
-npm run electron:build
-```
-
-### Mobile Builds (iOS, Android)
-
-For mobile, the backend server needs to be accessible over the network (run on a desktop machine).
-
-```bash
-# Install dependencies
-npm install
-
-# Sync web assets to mobile projects
-npm run cap:sync
-
-# Open in Android Studio
-npm run cap:android
-
-# Open in Xcode
-npm run cap:ios
-```
-
-Note: For mobile apps, ensure the server is running on the same network and update the WebSocket URLs if needed.
-
-## Development
-
-### Project Structure
-
-```
-jarvis-console/
-├── src/                    # Frontend source code
-│   ├── components/         # React components
-│   ├── pages/             # Application pages
-│   ├── stores/            # Zustand state management
-│   └── lib/               # Utilities and WebSocket client
-├── server/                # Backend source code
-│   ├── main.py           # FastAPI application
-│   ├── connection_manager.py
-│   └── worker/           # AI agents and LLM workers
-├── discoveryserver/      # Service discovery
-└── public/               # Static assets
-```
-
-### Running the Full Stack
-
-```bash
-# Start both frontend and backend concurrently
 npm run dev
 ```
 
-This runs the discovery server, frontend dev server, and backend simultaneously.
-
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file in the root directory:
-
-```env
-# Backend configuration
-OPENAI_API_KEY=your_openai_key
-OLLAMA_BASE_URL=http://localhost:11434
-
-# Frontend configuration
-VITE_WS_URL=ws://localhost:8000
+### Manual Start
+**Backend:**
+```bash
+cd server
+python main.py
+```
+**Frontend:**
+```bash
+npm run frontend
 ```
 
-## Contributing
+## 🔌 API Endpoints (WebSockets)
 
-We welcome contributions from developers of all skill levels! Here are ways you can help:
-
-### Getting Started
-
-1. **Fork** the repository
-2. **Clone** your fork: `git clone https://github.com/your-username/jarvis-console.git`
-3. **Create a feature branch**: `git checkout -b feature/your-feature-name`
-4. **Make your changes** and test thoroughly
-5. **Commit your changes**: `git commit -m "Add your feature"`
-6. **Push to your fork**: `git push origin feature/your-feature-name`
-7. **Open a Pull Request** with a clear description
-
-### Development Guidelines
-
-- Follow TypeScript best practices
-- Use ESLint and Prettier for code formatting
-- Write meaningful commit messages
-- Test your changes thoroughly
-- Update documentation when adding new features
-
-### Areas for Contribution
-
-- **UI/UX Improvements**: Enhance the dashboard design and user experience
-- **New Widgets**: Add calendar, weather, news, or custom widgets
-- **AI Features**: Improve LLM integration, add new agents, or enhance speech recognition
-- **Performance**: Optimize audio processing, reduce latency, improve resource usage
-- **Accessibility**: Add keyboard navigation, screen reader support, and inclusive design
-- **Testing**: Add unit tests, integration tests, and end-to-end tests
-- **Documentation**: Improve setup guides, API docs, and user manuals
-
-### Code of Conduct
-
-- Be respectful and inclusive
-- Provide constructive feedback
-- Help newcomers learn and contribute
-- Follow security best practices
-
-### Reporting Issues
-
-- Use GitHub Issues for bug reports and feature requests
-- Provide detailed steps to reproduce bugs
-- Include environment information and screenshots when possible
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-Inspired by JARVIS from Marvel's Iron Man series. Built with modern web technologies and AI frameworks.
+*   `/communicate`: General command/settings channel.
+*   `/hotword`: Streams audio for wake word detection.
+*   `/face_recognition`: Streams video frames for face ID.
+*   `/agents`: Submits tasks and receives agent updates.
+*   `/info`: Streams system resources (CPU/RAM/GPU).

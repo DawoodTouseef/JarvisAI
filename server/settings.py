@@ -17,6 +17,18 @@ class SettingsManager:
         # Initialize default settings if collection is empty
         if self.settings_collection.count_documents({}) == 0:
             self.initialize_default_settings()
+        
+        print(f"SettingsManager initialized with database at {db_path}")
+    
+    def close(self):
+        """Properly close the database client"""
+        try:
+            # Mongita doesn't have an explicit close() in some versions, 
+            # but we can at least clear the reference or ensure sync
+            self.client = None
+            print("SettingsManager database connection closed.")
+        except Exception as e:
+            print(f"Error closing SettingsManager: {e}")
     
     def initialize_default_settings(self):
         """Initialize default settings in the database"""

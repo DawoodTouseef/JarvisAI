@@ -23,7 +23,7 @@ class CommunicationManager {
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
-  
+
       // flush queued messages
       while (this.queue.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
         const msg = this.queue.shift()!;
@@ -67,7 +67,7 @@ class CommunicationManager {
     try {
       this.sendMessage(JSON.stringify(obj));
     } catch (err) {
-      
+      console.error("Failed to send JSON:", err);
     }
   }
 
@@ -253,9 +253,117 @@ class StatusManager {
   }
 }
 
+class AgentManager {
+  private url: string;
+  private ws: WebSocket | null = null;
+  private listeners = new Set<MessageHandler>();
+  private binaryListeners = new Set<BinaryMessageHandler>();
+  private queue: string[] = [];
+  private shouldReconnect = true;
+  private reconnectDelay = 1000; // start with 1s
+
+  constructor(url?: string, autoConnect = true) {
+    this.url = url || `ws://localhost:8000/voice-assistant`;
+    if (autoConnect) this.connect();
+  }
+
+  connect() {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    this.ws = new WebSocket(this.url);
+    this.ws.binaryType = 'arraybuffer';
+
+    this.ws.onopen = () => {
+      // flush queued messages
+      while (this.queue.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
+        const msg = this.queue.shift()!;
+        this.ws.send(msg);
+      }
+      // reset reconnect delay
+      this.reconnectDelay = 1000;
+    };
+
+    this.ws.onmessage = (event) => {
+      const data = event.data;
+      if (typeof data === 'string') {
+        for (const fn of this.listeners) fn(data);
+      } else {
+        for (const fn of this.binaryListeners) fn(data);
+      }
+    };
+
+    this.ws.onclose = (ev) => {
+      if (this.shouldReconnect) {
+        const delay = this.reconnectDelay;
+        setTimeout(() => {
+          this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 10000);
+          this.connect();
+        }, delay);
+      }
+    };
+
+    this.ws.onerror = (err) => {
+      console.error("WebSocket: error", err);
+      // errors will usually be followed by close
+    };
+  }
+
+  sendMessage(message: string) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(message);
+    } else {
+      // queue until the socket opens
+      this.queue.push(message);
+      // attempt a connect if we're not connected
+      this.connect();
+    }
+  }
+  sendJSON(obj: unknown) {
+    try {
+      this.sendMessage(JSON.stringify(obj));
+    } catch (err) {
+      console.error("Failed to send JSON:", err);
+    }
+  }
+  onMessage(handler: MessageHandler) {
+    this.listeners.add(handler);
+    // return unsubscribe
+    return () => this.listeners.delete(handler);
+  }
+  onBinary(handler: BinaryMessageHandler) {
+    this.binaryListeners.add(handler);
+    return () => this.binaryListeners.delete(handler);
+  }
+
+  sendBytes(data: ArrayBuffer | Uint8Array | Blob) {
+    const payload = data instanceof Uint8Array ? data.buffer : data;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(payload);
+    }
+  }
+
+  getMessage(): Promise<string> {
+    return new Promise((resolve) => {
+      const unsubscribe = this.onMessage((msg) => {
+        unsubscribe();
+        resolve(msg);
+      });
+    });
+  }
+
+  close() {
+    this.shouldReconnect = false;
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+}
 
 
 
 export const Communication = new CommunicationManager();
 export const StatusCommunication = new StatusManager();
 export const WakeWordCommunication = new HotwordCommunicationManager();
+export const AgentCommunication = new AgentManager();
