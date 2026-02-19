@@ -55,6 +55,10 @@ class AgentWorkflowState(TypedDict):
     task_id: str
     orchestrator_state: str
     role_context: Optional[Dict[str, Any]]
+    job_id: Optional[str]
+    job_type: str # chat or research
+    iteration_count: int
+    needs_more_research: bool
 
 
 class CentralOrchestrator:
@@ -67,6 +71,7 @@ class CentralOrchestrator:
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.cancelled_tasks: Set[str] = set()
         self.running_agents: Dict[str, List[BaseAgent]] = {}
+        self.concurrency_semaphore = asyncio.Semaphore(10)
         
         self._register_default_agents()
         self._setup_workflow()
@@ -106,9 +111,29 @@ class CentralOrchestrator:
         graph.add_node("synthesizer", self._synthesize_node)
         graph.add_node("finalizer", self._finalize_node)
 
+        # Define the routing logic
+        def research_router(state: AgentWorkflowState):
+            if state.get("workflow_status") == "failed":
+                return "finalizer"
+            
+            # For research jobs, we might want to iterate
+            if state.get("job_type") == "research" and state.get("iteration_count", 0) < 3:
+                # Check if synthesizer flagged for more research
+                if state.get("needs_more_research"):
+                    return "decomposer"
+            
+            return "finalizer"
+
         graph.add_edge("decomposer", "executor")
         graph.add_edge("executor", "synthesizer")
-        graph.add_edge("synthesizer", "finalizer")
+        graph.add_conditional_edges(
+            "synthesizer",
+            research_router,
+            {
+                "decomposer": "decomposer",
+                "finalizer": "finalizer"
+            }
+        )
         graph.add_edge("finalizer", END)
 
         graph.set_entry_point("decomposer")
@@ -121,19 +146,27 @@ class CentralOrchestrator:
 
     async def submit_task(self, task_data: Dict[str, Any]) -> AgentWorkflowState:
         task_id = task_data["id"]
+        
+        # Ensure default agents are present but don't duplicate them in a global list if possible
+        # For now, we fix the leak by only appending if not already there or by using a local list for the workflow
+        workflow_agents = list(self.agents)
+        
+        # Add task-specific agents if needed
         from .personal_agent import PersonalAgent
-        os.environ['OPENAI_API_KEY'] = task_data.get("auth_token")
-        os.environ['OPENAI_API_BASE'] = task_data.get("base_url")
-        self.agents.append(PersonalAgent(auth_token=task_data.get("auth_token"),server_url=task_data.get("base_url")))
-
+        os.environ['OPENAI_API_KEY'] = task_data.get("auth_token") or os.environ.get('OPENAI_API_KEY', '')
+        os.environ['OPENAI_API_BASE'] = task_data.get("base_url") or os.environ.get('OPENAI_API_BASE', '')
+        
+        personal = PersonalAgent(auth_token=task_data.get("auth_token"), server_url=task_data.get("base_url"))
+        workflow_agents.append(personal)
 
         try:
             local_agent = LocalExecutionChatbotAgent()
             local_agent.set_event_callback(self._emit_event)
-            self.agents.append(local_agent)
+            workflow_agents.append(local_agent)
         except Exception as exc:
             logger.exception("Failed to register Local Execution Chatbot Agent: %s", exc)
-        self.agents.append(WebSearchAgent(auth_token=task_data.get("auth_token"),server_url=task_data.get("base_url")))
+            
+        workflow_agents.append(WebSearchAgent(auth_token=task_data.get("auth_token"), server_url=task_data.get("base_url")))
         state: AgentWorkflowState = {
             "original_input": task_data["query"],
             "decomposed_tasks": [],
@@ -146,10 +179,14 @@ class CentralOrchestrator:
             "base_url": task_data.get("base_url"),
             "task_id": task_id,
             "orchestrator_state": OrchestratorState.THINKING.value,
-            "role_context": task_data.get("role_context")
+            "role_context": task_data.get("role_context"),
+            "job_id": task_data.get("job_id"),
+            "job_type": task_data.get("job_type", "chat"),
+            "iteration_count": 0,
+            "needs_more_research": False
         }
         
-        config = {"configurable": {"thread_id": task_id}}
+        config = {"configurable": {"thread_id": task_id}, "agents": workflow_agents}
         
         await self._update_state(task_id, OrchestratorState.THINKING)
         
@@ -158,12 +195,19 @@ class CentralOrchestrator:
         self.active_tasks[task_id] = execution_task
         
         try:
-            final_state = await execution_task
-            return final_state
+            async with self.concurrency_semaphore:
+                final_state = await execution_task
+                return final_state
         except asyncio.CancelledError:
             logger.info(f"Task {task_id} was cancelled")
             state["workflow_status"] = "cancelled"
             await self._update_state(task_id, OrchestratorState.CANCELLED)
+            return state
+        except Exception as e:
+            logger.exception(f"Workflow error for task {task_id}: {e}")
+            state["workflow_status"] = "failed"
+            state["errors"].append(str(e))
+            await self._update_state(task_id, OrchestratorState.FAILED)
             return state
         finally:
             if task_id in self.active_tasks:
@@ -176,9 +220,15 @@ class CentralOrchestrator:
         if task_id in self.active_tasks:
             self.active_tasks[task_id].cancel()
             self.cancelled_tasks.add(task_id)
+            
+            # Cancel local clarification futures
             clarification = self.clarification_futures.pop(task_id, None)
             if clarification and not clarification.done():
                 clarification.cancel()
+            
+            # Also cancel tool-based clarifications if any
+            agent_clarification_tool.cancel_clarification(task_id)
+            
             permission = self.permission_futures.pop(task_id, None)
             if permission and not permission.done():
                 permission.set_result(False)
@@ -204,9 +254,30 @@ class CentralOrchestrator:
 
     async def _decompose_node(self, state: AgentWorkflowState) -> AgentWorkflowState:
         try:
-            prompt = PromptTemplate(
-                input_variables=["query", "agents", "role_info"],
-                template="""
+            if state.get("job_type") == "research":
+                template_str = """
+You are a Lead Researcher. Decompose this complex query into an intensive multi-step research plan.
+Return JSON only.
+
+Available agents: 
+{agents}
+
+Objective: {query}
+Current Role: {role_info}
+
+Create a plan with iterative steps. Each task should have:
+- task_description: Specific action
+- agent: Best agent for the job
+- task_id: Unique ID
+- dep: ID of task this depends on (if any)
+- task_input: Specific instructions for the agent
+
+Format as a list of task objects.
+"""
+                input_vars = ["query", "agents", "role_info"]
+                example = {} # Not used in research template
+            else:
+                template_str = """
 Decompose the user request into a list of tasks.
 Return JSON only.
 
@@ -222,6 +293,12 @@ Format:
 Search Request: {query}
 Current Role: {role_info}
 """
+                input_vars = ["query", "agents", "role_info", "example"]
+                example = {} # Example will be populated below
+
+            prompt = PromptTemplate(
+                input_variables=input_vars,
+                template=template_str
             )
             llm = ChatOpenAI(
                 model="qwen3:latest",
@@ -272,7 +349,12 @@ Current Role: {role_info}
         completed: Set[str] = set()
 
         async def _run_item(item: Dict[str, Any]) -> Dict[str, Any]:
-            agent = next((agent for agent in self.agents if agent.name == item.get("agent")), None)
+            agents_list = config.get("agents") or self.agents
+            agent = next((agent for agent in agents_list if agent.name == item.get("agent")), None)
+            if not agent:
+                # Fallback to general purpose if agent not found
+                agent = next((a for a in agents_list if isinstance(a, GeneralPurposeAgent)), self.agents[2])
+
             task_text = item.get("task_description") or item.get("task_input") or ""
             task = Task(
                 metadata={
@@ -289,7 +371,9 @@ Current Role: {role_info}
             running.append(agent)
             await self._update_state(state["task_id"], OrchestratorState.RUNNING)
             try:
-                response = await agent.process_task(task)
+                # Create a task for agent execution to allow for cancellation propagation
+                agent_task = asyncio.create_task(agent.process_task(task))
+                response = await agent_task
                 return {
                     "task": task_text,
                     "agent": agent.name,
@@ -297,6 +381,9 @@ Current Role: {role_info}
                     "result": response.result,
                     "error": response.error,
                 }
+            except asyncio.CancelledError:
+                logger.info(f"Agent {agent.name} task cancelled for task_id {state['task_id']}")
+                raise
             finally:
                 if state["task_id"] in self.running_agents:
                     try:
@@ -379,6 +466,16 @@ Current Role: {role_info}
             state["processing_result"] = response.result
             state["workflow_status"] = "processed"
             
+            # Check if research needs more iteration
+            if state.get("job_type") == "research":
+                # Logic: If the response is very short or mentions "more research needed"
+                needs_more = len(str(response.result)) < 500 or "more research" in str(response.result).lower()
+                state["needs_more_research"] = needs_more
+                if needs_more:
+                    state["iteration_count"] = state.get("iteration_count", 0) + 1
+                    state["execution_log"].append(f"Iteration {state['iteration_count']}: Research incomplete, looping back.")
+                    return state
+
             # Emit the final response in chunks for the frontend TTS
             await self._update_state(state["task_id"], OrchestratorState.STREAMING)
             

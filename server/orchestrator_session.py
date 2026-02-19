@@ -14,7 +14,7 @@ import json
 from typing import Dict, Any, Optional, Callable, Set
 from datetime import datetime
 from server.agents.orchestrator import CentralOrchestrator
-from server.agents.base_agent import BaseAgent
+from server.agents.base_agent import BaseAgent, JobType, Job, AgentStatus
 from server.services.context.context_store import ContextStore
 from server.agents.vision_agent import VisionAgent
 from server.agents.system_context_agent import SystemContextAgent
@@ -57,6 +57,9 @@ class OrchestratorSession:
         self._send_task: Optional[asyncio.Task] = asyncio.create_task(self._send_loop())
         self._background_tasks: Set[asyncio.Task] = set()
         self._sent_final_for_task: Set[str] = set()
+        
+        # Job tracking for Deep Research
+        self.active_jobs: Dict[str, Job] = {}
         self._last_auth_token: Optional[str] = None
         self._last_base_url: Optional[str] = None
         self._screenshot_task: Optional[asyncio.Task] = None
@@ -512,14 +515,29 @@ class OrchestratorSession:
         Returns:
             task_id: ID of the created task
         """
-        if self.active_task_id:
+        # Detect if this is a research job
+        is_research = any(keyword in text.lower() for keyword in ["research", "deep research", "investigate", "elaborate on"])
+        job_type = JobType.RESEARCH if is_research else JobType.CHAT
+        
+        # CHAT jobs interrupt the current chat flow
+        if job_type == JobType.CHAT and self.active_task_id:
+            logger.info(f"Session {self.session_id}: Interrupting active task {self.active_task_id} for new CHAT query")
             await self.handle_interrupt(self.active_task_id)
+            await asyncio.sleep(0.1)
 
         task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.session_id}"
-        self.active_task_id = task_id
+        
+        # Only CHAT jobs track active_task_id for the main UI state
+        if job_type == JobType.CHAT:
+            self.active_task_id = task_id
+            
         self._last_auth_token = auth_token
         self._last_base_url = base_url
         ContextStore.set_task_session(task_id, self.session_id)
+        
+        # Create Job object for tracking
+        job = Job(id=f"job_{task_id}", type=job_type, task_ids=[task_id])
+        self.active_jobs[job.id] = job
         
         task_data = {
             "id": task_id,
@@ -527,11 +545,13 @@ class OrchestratorSession:
             "auth_token": auth_token,
             "base_url": base_url,
             "session_id": self.session_id,
+            "job_id": job.id,
+            "job_type": job_type
         }
         
-        logger.info(f"Session {self.session_id}: Submitting task {task_id}")
+        logger.info(f"Session {self.session_id}: Submitting {job_type} task {task_id}")
         
-        # Submit task asynchronously - orchestrator will emit events via callback
+        # Submit task asynchronously
         task = asyncio.create_task(self._execute_task(task_data))
         self._background_tasks.add(task)
         task.add_done_callback(lambda t: self._background_tasks.discard(t))
@@ -554,26 +574,50 @@ class OrchestratorSession:
     
     async def _execute_task(self, task_data: Dict[str, Any]):
         """Execute task and handle completion/errors."""
+        job_id = task_data.get("job_id")
+        job = self.active_jobs.get(job_id) if job_id else None
+        
         try:
+            if job:
+                job.status = AgentStatus.RUNNING
+                
             result = await self.orchestrator.submit_task(task_data)
             status = result.get('workflow_status')
+            
+            if job:
+                job.status = AgentStatus.COMPLETED if status == "completed" else AgentStatus.FAILED
+                job.result = result.get('processing_result')
+                job.completed_at = datetime.now()
+
             logger.info(f"Task {task_data['id']} completed with status: {status}")
-            logger.info(f"Task {task_data['id']} result: \n{result['processing_result']}")
-            # Send final response if available and not already emitted
+            
+            # Send final response
             processing_result = result.get('processing_result')
             if processing_result and task_data['id'] not in self._sent_final_for_task:
-                from server.services.reminder_service import get_reminder_agent
-                rem_agent = get_reminder_agent()
-                await rem_agent.record_assistant_query(processing_result)
-                await self._send_assistant_response(task_data['id'], {"text": str(processing_result)})
+                # If it's a research job, send a special event to frontend
+                if task_data.get("job_type") == JobType.RESEARCH:
+                    await self._send_assistant_response(task_data['id'], {
+                        "text": str(processing_result),
+                        "type": "research_result",
+                        "job_id": job_id
+                    })
+                else:
+                    from server.services.reminder_service import get_reminder_agent
+                    rem_agent = get_reminder_agent()
+                    await rem_agent.record_assistant_query(processing_result)
+                    await self._send_assistant_response(task_data['id'], {"text": str(processing_result)})
                 
         except Exception as e:
             logger.exception(f"Task {task_data['id']} failed: {e}")
+            if job:
+                job.status = AgentStatus.FAILED
             await self._send_error(task_data['id'], {"message": str(e)})
         finally:
             if self.active_task_id == task_data["id"]:
                 self.active_task_id = None
             self._sent_final_for_task.discard(task_data["id"])
+            # Keep the job in active_jobs for a bit or move to a history store
+            # For now, we'll keep it there.
     
     async def handle_clarification_response(self, task_id: str, response_text: str):
         """
@@ -640,6 +684,14 @@ class OrchestratorSession:
         
         if success:
             logger.info(f"Task {task_id} cancelled successfully")
+            
+            # Update associated Job status if found
+            for job in self.active_jobs.values():
+                if task_id in job.task_ids:
+                    job.status = AgentStatus.CANCELLED
+                    job.completed_at = datetime.now()
+                    break
+
             try:
                 from server.services.reminder_service import get_reminder_agent
                 rem_agent = get_reminder_agent()

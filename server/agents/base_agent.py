@@ -1,7 +1,7 @@
 """Base agent classes and enumerations"""
 
 from enum import Enum
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -17,6 +17,11 @@ class AgentStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+class JobType(str, Enum):
+    """Deep Research Job Types"""
+    CHAT = "chat"
+    RESEARCH = "research"
+
 class TaskPriority(int, Enum):
     """Task priority levels"""
     LOW = 0
@@ -24,11 +29,10 @@ class TaskPriority(int, Enum):
     HIGH = 2
     URGENT = 3
 
-
 class Task(BaseModel):
     """Task model for agent operations"""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    priority: int = 1 # Added for backward compatibility/priority support
+    priority: int = 1
     status: AgentStatus = AgentStatus.PENDING
     created_at: datetime = Field(default_factory=datetime.now)
     started_at: Optional[datetime] = None
@@ -38,6 +42,17 @@ class Task(BaseModel):
     metadata: Dict[str, Any] = {}
     cancellable: bool = True
     function: Optional[Callable] = None
+
+class Job(BaseModel):
+    """High-level Job abstraction for tracking research/chat workflows"""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: JobType = JobType.CHAT
+    status: AgentStatus = AgentStatus.PENDING
+    created_at: datetime = Field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
+    result: Optional[Any] = None
+    task_ids: List[str] = [] # Linkage to individual Task items
+    metadata: Dict[str, Any] = {}
 
 class AgentResponse(BaseModel):
     """Standard response format from agents"""
@@ -53,12 +68,11 @@ class BaseAgent(ABC):
 
     _default_event_callback: Optional[Callable] = None
 
-    def __init__(self, name: str, description: str,agent_id: str=None):
+    def __init__(self, name: str, description: str, agent_id: str = None):
         self.agent_id = agent_id if agent_id else str(uuid.uuid4())
         self.name = name
         self.description = description  
         self._event_callback: Optional[Callable] = BaseAgent._default_event_callback
-        
         self.status = AgentStatus.PENDING
         
     @abstractmethod
