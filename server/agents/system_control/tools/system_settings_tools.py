@@ -1,4 +1,12 @@
 from .registry import register_tool
+from datetime import datetime
+import platform
+import socket
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 try:
     import screen_brightness_control as sbc
@@ -58,5 +66,56 @@ def get_brightness() -> dict:
     try:
         level = sbc.get_brightness()
         return {"success": True, "level": level}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@register_tool("get_system_time", description="Get the current local time.")
+def get_system_time() -> dict:
+    try:
+        now = datetime.now()
+        return {"success": True, "time": now.strftime("%H:%M:%S"), "timestamp": now.isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@register_tool("get_system_date", description="Get the current local date.")
+def get_system_date() -> dict:
+    try:
+        today = datetime.now()
+        return {"success": True, "date": today.strftime("%Y-%m-%d"), "timestamp": today.isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@register_tool("get_os_info", description="Get basic operating system info.")
+def get_os_info() -> dict:
+    try:
+        return {
+            "success": True,
+            "os": platform.system(),
+            "release": platform.release(),
+            "version": platform.version(),
+            "platform": platform.platform()
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@register_tool("get_system_info", description="Get system summary info (CPU, memory, hostname).")
+def get_system_info() -> dict:
+    try:
+        info = {
+            "success": True,
+            "hostname": socket.gethostname(),
+            "os": platform.system(),
+            "release": platform.release(),
+            "version": platform.version(),
+            "platform": platform.platform(),
+        }
+        if psutil:
+            info.update({
+                "cpu_count": psutil.cpu_count(logical=True),
+                "memory_total": psutil.virtual_memory().total,
+                "memory_available": psutil.virtual_memory().available,
+                "uptime_seconds": int(datetime.now().timestamp() - psutil.boot_time()),
+            })
+        return info
     except Exception as e:
         return {"success": False, "error": str(e)}

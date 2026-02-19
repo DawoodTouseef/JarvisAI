@@ -21,6 +21,7 @@ import { SettingsWindow } from "@/components/SettingsWindow";
 import { NotesWindow } from "@/components/NotesWindow";
 import { CalendarWindow } from "@/components/CalendarWindow";
 import { Communication, AgentCommunication } from "@/lib/client_websocket";
+import { useVisionStore } from "@/stores/vision";
 
 
 const Dashboard = () => {
@@ -37,6 +38,7 @@ const Dashboard = () => {
   const [tasks, setTasks] = useState(false);
   const [use24hrFormat, setUse24hrFormat] = useState(false);
   const [useCameraVision, setUseCameraVision] = useState(false);
+  const setCameraEnabled = useVisionStore((s) => s.setCameraEnabled);
 
   const transcription = useTranscriptionStore((state) => state.text);
   const [isClockOpen, setIsClockOpen] = useState(false);
@@ -163,6 +165,10 @@ const Dashboard = () => {
   useEffect(() => {
     setTime(new Date());
   }, [use24hrFormat]);
+
+  useEffect(() => {
+    setCameraEnabled(useCameraVision);
+  }, [useCameraVision, setCameraEnabled]);
   return (
     <div className="min-h-screen relative overflow-hidden">
       <ParticleField />

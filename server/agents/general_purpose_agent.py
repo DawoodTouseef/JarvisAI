@@ -62,6 +62,9 @@ class GeneralPurposeAgent(BaseAgent):
         task_id = task.id
         user_query = task.metadata.get("query", "")
         context = task.metadata.get("context", [])
+        await self.emit_event("active_agent", task_id, {"agent": self.name})
+        await self.emit_event("agent_state", task_id, {"state": "executing", "agent": self.name})
+        await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": "Planning task execution"})
         
         # History for reasoning loop
         internal_history = []
@@ -121,7 +124,7 @@ class GeneralPurposeAgent(BaseAgent):
         except Exception as e:
             logger.exception("Error in GP Agent loop")
             self.state = AgentState.FAILED
-            return self._create_response(task, f"Internal Error: {str(e)}", success=False)
+            return self._create_response(task, f"internal_error: {str(e)}", success=False)
         finally:
             self.status = AgentStatus.COMPLETED if self.state == AgentState.COMPLETED else AgentStatus.FAILED
 
@@ -190,7 +193,7 @@ RETURN JSON ONLY in this format:
                 
         except Exception as e:
             logger.error(f"Reasoning layer error: {e}")
-            return ReasoningStep(thought="Error in reasoning", action="final_response", response="I encountered an error while thinking about this task.")
+            return ReasoningStep(thought="Error in reasoning", action="final_response", response="reasoning_failed")
 
     def _infer_role_style(self, query: str) -> str:
         q = query.lower()
@@ -252,8 +255,12 @@ RETURN JSON ONLY in this format:
             "data": data
         }
         logger.info(f"Agent Event: {event_type} - {data}")
-        # Integration with ConnectionManager/WebSocket would go here
-        # For now, it's a log. Orchestrator or Integration layer will catch these.
+        if event_type == "tool_called":
+            await self.emit_event("tool_called", task_id, {"agent": self.name, "tool": data.get("tool")})
+        elif event_type == "step_completed":
+            await self.emit_event("tool_result", task_id, {"agent": self.name, "tool": data.get("tool"), "success": data.get("success", True)})
+        else:
+            await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": event_type, "details": data})
 
     def _create_response(self, task: Task, result: Any, success: bool = True) -> AgentResponse:
         return AgentResponse(

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import inspect
+import os
 from typing import Dict, Any, List, Optional, Callable, Type, Union
 from pydantic import BaseModel, Field, create_model
 import datetime
@@ -92,20 +93,17 @@ class FileIOSchema(BaseModel):
     operation: str = Field(..., description="The operation to perform: 'read' or 'write'")
     filename: str = Field(..., description="The name/path of the file")
     content: Optional[str] = Field(None, description="The content to write (required for 'write' operation)")
+    allow_write: bool = Field(False, description="Explicitly allow write operations")
 
 class FileIOTool(BaseTool):
     name: str = "file_io"
     description: str = "Read from or write to local files (restricted to allowed directories)."
     args_schema: Type[BaseModel] = FileIOSchema
     
-    async def run(self, operation: str, filename: str, content: Optional[str] = None) -> Any:
+    async def run(self, operation: str, filename: str, content: Optional[str] = None, allow_write: bool = False) -> Any:
         # TODO: Implement strict directory check
         allowed_dir = os.path.abspath("data") # Or similar
         full_path = os.path.abspath(filename)
-        
-        # Simple security check (could be improved)
-        # if not full_path.startswith(allowed_dir):
-        #     return {"error": "Access denied: Filename outside allowed directory"}
             
         try:
             if operation == "read":
@@ -115,6 +113,8 @@ class FileIOTool(BaseTool):
                 data = await asyncio.to_thread(_read)
                 return {"content": data}
             elif operation == "write":
+                if not allow_write and not os.getenv("JARVIS_ALLOW_FILE_WRITE"):
+                    return {"error": "Permission required for file write. Set JARVIS_ALLOW_FILE_WRITE=1 or pass allow_write=true."}
                 if content is None:
                     return {"error": "Content required for write operation"}
                 def _write():
@@ -135,20 +135,101 @@ class KnowledgeLookupTool(BaseTool):
     args_schema: Type[BaseModel] = KnowledgeLookupSchema
     
     async def run(self, query: str) -> Any:
-        # Mocking a knowledge lookup for now
-        # In a real system, this would query a vector database (RAG)
-        mock_kb = {
-            "jarvis": "Jarvis is an advanced AI assistant designed for productivity and system control.",
-            "creator": "Jarvis was designed by the AI systems architecture team.",
-            "version": "Current version is 2.0 Agentic Alpha.",
+        from mem0 import AsyncMemory
 
+
+        mem_config = {
+            "llm": {
+                "provider": "litellm",
+                "config": {
+                    "model": "huggingface/microsoft/phi-4-mini-instruct",
+
+                }
+            },
+            "embedder": {
+                "provider": "huggingface",
+                "config": {
+                    "model": "multi-qa-MiniLM-L6-cos-v1"
+                }
+            },
+            "vector_store": {
+                "provider": "chroma",
+                "config": {
+                    "collection_name": "jarvis",
+                    "path": pathjoin(jarvis_cache,"memory"),
+                }
+            }
         }
-        query_lower = query.lower()
-        results = [v for k, v in mock_kb.items() if k in query_lower]
-        if results:
-            return {"results": results}
+        memory= AsyncMemory.from_config(mem_config)
+        memories = memory.search(query, user_id=user_id)
+        if memories and isinstance(memories, dict) and 'results' in memories:
+            memory_context = "\n".join([f"- {m['text']}" for m in memories['results'] if isinstance(m, dict) and 'text' in m])
+        elif isinstance(memories, list):
+            memory_context = "\n".join([f"- {m['text']}" for m in memories if isinstance(m, dict) and 'text' in m])
+        if  memory_context:
+            return {"results": memory_context}
         return {"results": ["No matching information found in local knowledge base. Use web_search for external info."]}
 
+class WeatherLookupSchema(BaseModel):
+    location: str = Field(..., description="Location name, e.g., 'New York, NY' or 'London'")
+
+class WeatherLookupTool(BaseTool):
+    name: str = "weather_lookup"
+    description: str = "Fetch real-time weather for a location using public APIs."
+    args_schema: Type[BaseModel] = WeatherLookupSchema
+
+    async def run(self, location: str) -> Any:
+        import requests
+        try:
+            geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+            geo_resp = await asyncio.to_thread(requests.get, geo_url, params={"name": location, "count": 1})
+            geo_data = geo_resp.json() if geo_resp.ok else {}
+            results = geo_data.get("results") or []
+            if not results:
+                return {"error": f"Location not found: {location}"}
+            loc = results[0]
+            lat = loc.get("latitude")
+            lon = loc.get("longitude")
+            weather_url = "https://api.open-meteo.com/v1/forecast"
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code",
+                "timezone": "auto",
+            }
+            weather_resp = await asyncio.to_thread(requests.get, weather_url, params=params)
+            weather = weather_resp.json() if weather_resp.ok else {}
+            return {"location": loc, "weather": weather.get("current", {}), "timestamp": weather.get("current", {}).get("time")}
+        except Exception as e:
+            return {"error": f"Weather lookup failed: {str(e)}"}
+
+class NewsSearchSchema(BaseModel):
+    query: str = Field(..., description="Search query for news")
+    limit: int = Field(10, description="Max number of articles to return")
+
+class NewsSearchTool(BaseTool):
+    name: str = "news_search"
+    description: str = "Fetch latest news articles via public RSS feeds."
+    args_schema: Type[BaseModel] = NewsSearchSchema
+
+    async def run(self, query: str, limit: int = 10) -> Any:
+        try:
+            import feedparser
+            import urllib.parse
+            q = urllib.parse.quote_plus(query)
+            url = f"https://news.google.com/rss/search?q={q}"
+            feed = await asyncio.to_thread(feedparser.parse, url)
+            entries = []
+            for entry in feed.entries[: max(1, min(limit, 50))]:
+                entries.append({
+                    "title": entry.get("title"),
+                    "link": entry.get("link"),
+                    "published": entry.get("published"),
+                    "source": entry.get("source", {}).get("title") if isinstance(entry.get("source"), dict) else None,
+                })
+            return {"query": query, "articles": entries}
+        except Exception as e:
+            return {"error": f"News search failed: {str(e)}"}
 
 
 # Global registry instance
@@ -160,6 +241,8 @@ registry.register_tool(WebSearchTool())
 registry.register_tool(CalculatorTool())
 registry.register_tool(FileIOTool())
 registry.register_tool(KnowledgeLookupTool())
+registry.register_tool(WeatherLookupTool())
+registry.register_tool(NewsSearchTool())
 
 # Optional tool extensions (vision/context)
 try:

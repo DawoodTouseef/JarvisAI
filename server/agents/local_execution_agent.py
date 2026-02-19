@@ -57,6 +57,10 @@ class LocalExecutionChatbotAgent(BaseAgent):
         query = task.metadata.get("query", "")
         permission_callback = task.metadata.get("permission_callback")
 
+        await self.emit_event("active_agent", task_id, {"agent": self.name})
+        await self.emit_event("agent_state", task_id, {"state": "executing", "agent": self.name})
+        await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": "Preparing execution plan"})
+
         plan = await self._create_plan(task, query)
         if plan.action == "reasoning":
             self.status = AgentStatus.COMPLETED
@@ -70,6 +74,7 @@ class LocalExecutionChatbotAgent(BaseAgent):
                 summary = f"{plan.action} execution"
                 if plan.permission_reason:
                     summary = f"{summary} - {plan.permission_reason}"
+                await self.emit_event("agent_state", task_id, {"state": "waiting_for_permission", "agent": self.name})
                 approved = await self._request_permission(
                     permission_callback,
                     summary,
@@ -78,14 +83,22 @@ class LocalExecutionChatbotAgent(BaseAgent):
                 )
                 if not approved:
                     self.status = AgentStatus.CANCELLED
+                    await self.emit_event("error_event", task_id, {
+                        "source": "local_execution",
+                        "agent": self.name,
+                        "message": "Permission denied"
+                    })
                     return AgentResponse(agent_id=self.agent_id, success=False, error="Permission denied.")
 
             try:
+                await self.emit_event("tool_called", task_id, {"agent": self.name, "tool": plan.action})
+                await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": f"Running {plan.action} code"})
                 result = await self._execute_plan(task_id, plan, token)
             except RuntimeError as exc:
                 if plan.action == "javascript" and "sandbox runtime is unavailable" in str(exc).lower():
                     plan.needs_privilege = True
                     summary = "javascript execution - Sandbox runtime unavailable, need Node.js."
+                    await self.emit_event("agent_state", task_id, {"state": "waiting_for_permission", "agent": self.name})
                     approved = await self._request_permission(
                         permission_callback,
                         summary,
@@ -94,15 +107,27 @@ class LocalExecutionChatbotAgent(BaseAgent):
                     )
                     if not approved:
                         self.status = AgentStatus.CANCELLED
+                        await self.emit_event("error_event", task_id, {
+                            "source": "local_execution",
+                            "agent": self.name,
+                            "message": "Permission denied"
+                        })
                         return AgentResponse(agent_id=self.agent_id, success=False, error="Permission denied.")
+                    await self.emit_event("tool_called", task_id, {"agent": self.name, "tool": plan.action})
                     result = await self._execute_plan(task_id, plan, token)
                 else:
                     raise
             self.status = AgentStatus.COMPLETED
+            await self.emit_event("tool_result", task_id, {"agent": self.name, "tool": plan.action, "success": True})
             return AgentResponse(agent_id=self.agent_id, success=True, result=self._format_result(plan, result))
         except Exception as exc:
             logger.exception("Local execution failed")
             self.status = AgentStatus.FAILED
+            await self.emit_event("error_event", task_id, {
+                "source": "local_execution",
+                "agent": self.name,
+                "message": str(exc)
+            })
             return AgentResponse(agent_id=self.agent_id, success=False, error=str(exc))
         finally:
             self._cancel_tokens.pop(task_id, None)

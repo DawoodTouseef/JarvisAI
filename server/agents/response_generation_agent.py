@@ -37,6 +37,10 @@ class ResponseGenerationAgent(BaseAgent):
     async def process_task(self, task: Task) -> AgentResponse:
         """Synthesize results into a unified response"""
         try:
+            task_id = task.metadata.get("parent_task_id") or task.id
+            await self.emit_event("active_agent", task_id, {"agent": self.name})
+            await self.emit_event("agent_state", task_id, {"state": "executing", "agent": self.name})
+            await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": "Synthesizing response"})
             original_input = task.metadata.get("original_input", "")
             task_results = task.metadata.get("task_results", [])
             decomposed_tasks = task.metadata.get("decomposed_tasks", [])
@@ -97,6 +101,11 @@ class ResponseGenerationAgent(BaseAgent):
             )
             
         except Exception as e:
+            await self.emit_event("error_event", task.metadata.get("parent_task_id") or task.id, {
+                "source": "response_generation",
+                "agent": self.name,
+                "message": f"Response synthesis failed: {str(e)}"
+            })
             return AgentResponse(
                 agent_id=self.agent_id,
                 success=False,

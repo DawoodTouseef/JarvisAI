@@ -16,19 +16,36 @@ class SystemAgentWrapper(BaseAgent):
             description="Safe OS control, file management, and system task automation"
         )
         self._event_callback:Optional[Callable] = None
-        self.system_agent = SystemControlAgent(event_callback=self._handle_orchestrator_event)
+        self.system_agent = SystemControlAgent(event_callback=self._handle_system_event)
     def set_event_callback(self,event_callback:Optional[Callable]):
         self._event_callback = event_callback
-    def _handle_orchestrator_event(self, event_type: str, task_id: str, payload: Dict[str, Any]):
+
+    def _handle_system_event(self, event_type: Any, task_id: Optional[str] = None, payload: Optional[Dict[str, Any]] = None):
         """Emit system agent events to the orchestration system for observability."""
         if not self._event_callback:
             return None
-        result = self._event_callback(event_type, task_id, payload)
+        if hasattr(event_type, "event_type"):
+            event = event_type
+            event_type = getattr(event, "event_type", "system_agent_event")
+            task_id = getattr(event, "task_id", task_id)
+            payload = getattr(event, "payload", payload) or {}
+        if payload is None:
+            payload = {}
+        payload.setdefault("agent", self.name)
+        if "message" not in payload:
+            payload["message"] = event_type
+        result = self._event_callback(event_type, task_id, payload or {})
+        if asyncio.iscoroutine(result):
+            asyncio.create_task(result)
+            return None
         return result
 
     def can_handle_task(self, task) -> bool:
         task_str = str(task).lower()
-        return any(x in task_str for x in ["system", "os", "computer", "control"])
+        return any(x in task_str for x in [
+            "system", "os", "computer", "control", "open", "close",
+            "click", "type", "press", "scroll", "mouse", "keyboard", "window"
+        ])
 
     async def process_task(self, task: Task) -> AgentResponse:
         """Process OS-level and system tasks using the safe Control Agent"""
@@ -38,14 +55,22 @@ class SystemAgentWrapper(BaseAgent):
             input_query = task.metadata.get("query")
             task_id = task.metadata.get("parent_task_id") or task.id
             self.system_agent.intent_parser.llm_client=self.get_llm(task)
+            await self.emit_event("active_agent", task_id, {"agent": self.name})
+            await self.emit_event("agent_state", task_id, {"state": "executing", "agent": self.name})
+            await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": "Handling system command"})
             # Process the command thru the system agent
             result = await self.system_agent.handle_command(
                 task_id=task_id,
                 query=input_query,
-                permission_callback=self._handle_orchestrator_event,
+                permission_callback=task.metadata.get("permission_callback"),
                 )
             
             if not result.get("success"):
+                await self.emit_event("error_event", task_id, {
+                    "source": "system_control",
+                    "agent": self.name,
+                    "message": result.get("error") or result.get("text") or "System control failed"
+                })
                 return AgentResponse(
                     agent_id=self.agent_id,
                     success=False,
@@ -58,6 +83,11 @@ class SystemAgentWrapper(BaseAgent):
                 result=result.get("results")
             )
         except Exception as e:
+            await self.emit_event("error_event", task_id, {
+                "source": "system_control",
+                "agent": self.name,
+                "message": f"System control task failed: {str(e)}"
+            })
             return AgentResponse(
                 agent_id=self.agent_id,
                 success=False,

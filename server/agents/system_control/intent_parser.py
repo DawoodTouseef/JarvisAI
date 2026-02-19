@@ -1,5 +1,6 @@
 import json
 import inspect
+import re
 from typing import List, Dict, Any
 from langchain_core.messages import SystemMessage, HumanMessage
 from .schemas import ActionIntent, PermissionLevel
@@ -29,6 +30,7 @@ class IntentParser:
                 return parsed
     
         lowered = query.lower().strip()
+        file_path = self._extract_path(query)
         if lowered.startswith("run "):
             command = query.strip()[4:]
             return [
@@ -50,13 +52,182 @@ class IntentParser:
                     permission_level=PermissionLevel.CONFIRM
                 )
             ]
+        if "open file" in lowered and file_path:
+            return [
+                ActionIntent(
+                    tool_name="open_file",
+                    parameters={"path": file_path},
+                    reasoning="User requested to open a file",
+                    permission_level=PermissionLevel.SAFE
+                )
+            ]
+        if ("open folder" in lowered or "open directory" in lowered) and file_path:
+            return [
+                ActionIntent(
+                    tool_name="open_folder",
+                    parameters={"path": file_path},
+                    reasoning="User requested to open a folder",
+                    permission_level=PermissionLevel.SAFE
+                )
+            ]
+        if ("read file" in lowered or "read the file" in lowered) and file_path:
+            return [
+                ActionIntent(
+                    tool_name="read_file",
+                    parameters={"path": file_path},
+                    reasoning="User requested to read a file",
+                    permission_level=PermissionLevel.SAFE
+                )
+            ]
+        if any(k in lowered for k in ["open app", "open application", "launch app", "launch application", "open "]):
+            app_name = self._extract_after_keyword(query, ["open", "launch"])
+            if app_name:
+                return [
+                    ActionIntent(
+                        tool_name="open_application",
+                        parameters={"app_name": app_name},
+                        reasoning="User requested to open an application",
+                        permission_level=PermissionLevel.SAFE
+                    )
+                ]
+        if any(k in lowered for k in ["close app", "close application", "quit app", "quit application", "close "]):
+            app_name = self._extract_after_keyword(query, ["close", "quit"])
+            if app_name:
+                return [
+                    ActionIntent(
+                        tool_name="close_application",
+                        parameters={"app_name": app_name},
+                        reasoning="User requested to close an application",
+                        permission_level=PermissionLevel.SAFE
+                    )
+                ]
+        if "focus" in lowered:
+            app_name = self._extract_after_keyword(query, ["focus"])
+            if app_name:
+                return [
+                    ActionIntent(
+                        tool_name="focus_window",
+                        parameters={"app_name": app_name},
+                        reasoning="User requested to focus a window",
+                        permission_level=PermissionLevel.SAFE
+                    )
+                ]
+        if "type " in lowered:
+            text = self._extract_after_keyword(query, ["type", "enter"])
+            if text:
+                return [
+                    ActionIntent(
+                        tool_name="type_text",
+                        parameters={"text": text},
+                        reasoning="User requested to type text",
+                        permission_level=PermissionLevel.SAFE
+                    )
+                ]
+        if "press" in lowered:
+            key = self._extract_after_keyword(query, ["press"])
+            if key:
+                return [
+                    ActionIntent(
+                        tool_name="press_key",
+                        parameters={"key": key},
+                        reasoning="User requested to press a key",
+                        permission_level=PermissionLevel.SAFE
+                    )
+                ]
+        if "scroll" in lowered:
+            clicks = 5
+            if "down" in lowered:
+                clicks = -5
+            amount = self._extract_int(lowered)
+            if amount is not None:
+                clicks = -abs(amount) if "down" in lowered else abs(amount)
+            return [
+                ActionIntent(
+                    tool_name="scroll",
+                    parameters={"clicks": clicks},
+                    reasoning="User requested to scroll",
+                    permission_level=PermissionLevel.SAFE
+                )
+            ]
+        if "move mouse" in lowered or "move cursor" in lowered:
+            coords = self._extract_coords(lowered)
+            if coords and len(coords) >= 2:
+                return [
+                    ActionIntent(
+                        tool_name="move_mouse",
+                        parameters={"x": coords[0], "y": coords[1]},
+                        reasoning="User requested to move the mouse",
+                        permission_level=PermissionLevel.SAFE
+                    )
+                ]
+        if "click" in lowered:
+            coords = self._extract_coords(lowered)
+            if coords and len(coords) >= 2:
+                return [
+                    ActionIntent(
+                        tool_name="click",
+                        parameters={"x": coords[0], "y": coords[1]},
+                        reasoning="User requested a mouse click",
+                        permission_level=PermissionLevel.SAFE
+                    )
+                ]
+        if "drag" in lowered:
+            coords = self._extract_coords(lowered)
+            if coords and len(coords) >= 4:
+                return [
+                    ActionIntent(
+                        tool_name="drag_mouse",
+                        parameters={"start_x": coords[0], "start_y": coords[1], "end_x": coords[2], "end_y": coords[3]},
+                        reasoning="User requested a mouse drag",
+                        permission_level=PermissionLevel.SAFE
+                    )
+                ]
         
+        if "time" in lowered:
+            return [
+                ActionIntent(
+                    tool_name="get_system_time",
+                    parameters={},
+                    reasoning="User requested local time",
+                    permission_level=PermissionLevel.SAFE
+                )
+            ]
+
+        if "date" in lowered or "today" in lowered:
+            return [
+                ActionIntent(
+                    tool_name="get_system_date",
+                    parameters={},
+                    reasoning="User requested local date",
+                    permission_level=PermissionLevel.SAFE
+                )
+            ]
+
+        if "os" in lowered or "operating system" in lowered or "platform" in lowered:
+            return [
+                ActionIntent(
+                    tool_name="get_os_info",
+                    parameters={},
+                    reasoning="User requested OS info",
+                    permission_level=PermissionLevel.SAFE
+                )
+            ]
+        if "system info" in lowered or "system information" in lowered or "hardware" in lowered:
+            return [
+                ActionIntent(
+                    tool_name="get_system_info",
+                    parameters={},
+                    reasoning="User requested system info",
+                    permission_level=PermissionLevel.SAFE
+                )
+            ]
+        return []
 
     async def _parse_with_llm(self, query: str) -> List[ActionIntent]:
         tools = self._describe_tools()
         tool_names = [tool["name"] for tool in tools]
-        tool_description = [tool['name'] for tool in _TOOL_DESCRIPTIONS]
-        tools_= "\n".join([f"-{i}:{j}" for i,j in zip(tool_name,tool_description)])
+        tool_descriptions = [name for name in _TOOL_DESCRIPTIONS]
+        tools_ = "\n".join([f"-{i}:{j}" for i, j in zip(tool_names, tool_descriptions)])
         system_prompt = (
             "You are a system-control intent parser. "
             "Return ONLY valid JSON with a list of steps. "
@@ -120,6 +291,32 @@ Rules:
         if start != -1 and end != -1 and end > start:
             return text[start:end + 1]
         return text
+
+    def _extract_path(self, text: str) -> str:
+        windows_match = re.search(r"([A-Za-z]:\\[^\"'\s]+)", text)
+        if windows_match:
+            return windows_match.group(1)
+        unix_match = re.search(r"(/[^\"'\s]+)", text)
+        if unix_match:
+            return unix_match.group(1)
+        return ""
+
+    def _extract_after_keyword(self, text: str, keywords: List[str]) -> str:
+        lowered = text.lower()
+        for kw in keywords:
+            if kw in lowered:
+                idx = lowered.find(kw) + len(kw)
+                remainder = text[idx:].strip(" :,-")
+                return remainder.strip()
+        return ""
+
+    def _extract_coords(self, text: str) -> List[int]:
+        numbers = re.findall(r"(-?\d+)", text)
+        return [int(n) for n in numbers]
+
+    def _extract_int(self, text: str) -> Any:
+        match = re.search(r"(-?\d+)", text)
+        return int(match.group(1)) if match else None
 
     def _describe_tools(self) -> List[Dict[str, Any]]:
         tools = []

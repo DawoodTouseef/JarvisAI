@@ -24,9 +24,15 @@ class KnowledgeAgent(BaseAgent):
     async def process_task(self, task: Task) -> AgentResponse:
         query = task.metadata.get("query", "")
         if not query:
+            await self.emit_event("error_event", task.metadata.get("parent_task_id") or task.id, {
+                "source": "knowledge",
+                "agent": self.name,
+                "message": "No query provided."
+            })
             return AgentResponse(agent_id=self.agent_id, success=False, error="No query provided.")
 
         try:
+            task_id = task.metadata.get("parent_task_id") or task.id
             # Prefer internal knowledge lookup when available.
             kb_tool = tool_registry.get_tool("knowledge_lookup")
             if kb_tool:
@@ -39,6 +45,16 @@ class KnowledgeAgent(BaseAgent):
                 web_result = await web_tool.run(query=query)
                 return AgentResponse(agent_id=self.agent_id, success=True, result={"source": "web_search", "data": web_result})
 
+            await self.emit_event("error_event", task_id, {
+                "source": "knowledge",
+                "agent": self.name,
+                "message": "No knowledge tools available."
+            })
             return AgentResponse(agent_id=self.agent_id, success=False, error="No knowledge tools available.")
         except Exception as exc:
+            await self.emit_event("error_event", task.metadata.get("parent_task_id") or task.id, {
+                "source": "knowledge",
+                "agent": self.name,
+                "message": str(exc)
+            })
             return AgentResponse(agent_id=self.agent_id, success=False, error=str(exc))

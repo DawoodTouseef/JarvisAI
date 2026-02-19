@@ -101,8 +101,14 @@ class DeepSearchAgent(BaseAgent):
         """Orchestrates the research process."""
         self.status = AgentStatus.RUNNING
         query = task.metadata.get("query")
+        task_id = task.metadata.get("parent_task_id") or task.id
         
         if not query:
+            await self.emit_event("error_event", task_id, {
+                "source": "deep_search",
+                "agent": self.name,
+                "message": "No query provided."
+            })
             return AgentResponse(
                 agent_id=self.agent_id,
                 success=False,
@@ -127,6 +133,9 @@ class DeepSearchAgent(BaseAgent):
             
 
         llm = self.get_llm(task)
+        await self.emit_event("active_agent", task_id, {"agent": self.name})
+        await self.emit_event("agent_state", task_id, {"state": "executing", "agent": self.name})
+        await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": "Starting deep research"})
         
         try:
             # 2. Analyze and Decompose Query (Now with memory context)
@@ -143,6 +152,7 @@ class DeepSearchAgent(BaseAgent):
                 current_step += 1
                 logger.info(f"Research Step {current_step}/{max_steps}")
                 
+                await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": f"Searching sources (step {current_step})"})
                 search_tasks = [self._research_question(q) for q in questions_to_search]
                 results = await asyncio.gather(*search_tasks)
                 
@@ -161,6 +171,7 @@ class DeepSearchAgent(BaseAgent):
                 logger.info("Insufficient sources found, attempting refinement step.")
 
             # 4. Reasoning and Synthesis
+            await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": "Synthesizing findings"})
             final_report = await self._synthesize_findings(llm, query, unique_sources, memory_context)
 
             # 5. Store findings in memory
@@ -179,6 +190,11 @@ class DeepSearchAgent(BaseAgent):
 
         except Exception as e:
             logger.exception("Error in DeepSearchAgent")
+            await self.emit_event("error_event", task_id, {
+                "source": "deep_search",
+                "agent": self.name,
+                "message": str(e)
+            })
             return AgentResponse(
                 agent_id=self.agent_id,
                 success=False,

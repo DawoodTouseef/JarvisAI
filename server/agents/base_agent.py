@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
+import asyncio
 from server.services.chat_ai_server import ChatAIServer as ChatOpenAI
 
 class AgentStatus(str, Enum):
@@ -49,11 +50,14 @@ class AgentResponse(BaseModel):
 
 class BaseAgent(ABC):
     """Abstract base class for all agents"""
-    
+
+    _default_event_callback: Optional[Callable] = None
+
     def __init__(self, name: str, description: str,agent_id: str=None):
         self.agent_id = agent_id if agent_id else str(uuid.uuid4())
         self.name = name
         self.description = description  
+        self._event_callback: Optional[Callable] = BaseAgent._default_event_callback
         
         self.status = AgentStatus.PENDING
         
@@ -86,3 +90,21 @@ class BaseAgent(ABC):
             server_url=base_url,
             model="qwen3:latest"
         )
+
+    @classmethod
+    def set_default_event_callback(cls, callback: Optional[Callable]) -> None:
+        cls._default_event_callback = callback
+
+    def set_event_callback(self, callback: Optional[Callable]) -> None:
+        self._event_callback = callback
+
+    async def emit_event(self, event_type: str, task_id: str, payload: Dict[str, Any]) -> None:
+        if not self._event_callback:
+            return
+        try:
+            result = self._event_callback(event_type, task_id, payload)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            # Avoid cascading failures on telemetry events.
+            return

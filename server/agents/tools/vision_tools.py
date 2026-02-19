@@ -16,7 +16,7 @@ class VisionAnalyzeSchema(BaseModel):
 class VisionAnalyzeTool(BaseTool):
     name: str = "vision_analyze"
     description: str = "Run OCR + object detection on the latest screen/image for the session."
-    args_schema = VisionAnalyzeSchema
+    args_schema: type[BaseModel] = VisionAnalyzeSchema
 
     async def run(self, session_id: str):
         screenshot_image = ContextStore.get_screenshot_image(session_id)
@@ -39,7 +39,7 @@ class VisionPerceptionSchema(BaseModel):
 class VisionPerceptionTool(BaseTool):
     name: str = "vision_perception"
     description: str = "Centralized vision perception (screen + optional camera)."
-    args_schema = VisionPerceptionSchema
+    args_schema: type[BaseModel] = VisionPerceptionSchema
 
     async def run(self, session_id: str):
         tool = VisionAnalyzeTool()

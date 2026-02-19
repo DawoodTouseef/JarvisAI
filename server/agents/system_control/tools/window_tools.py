@@ -45,3 +45,24 @@ def close_application(app_name: str) -> dict:
         return {"success": True, "message": f"Closed {app_name}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@register_tool("get_window_list", description="List titles of open windows.")
+def get_window_list() -> dict:
+    if not gw:
+        return {"success": False, "error": "pygetwindow not installed"}
+    try:
+        titles = [t for t in gw.getAllTitles() if t]
+        return {"success": True, "windows": titles}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@register_tool("get_active_window", description="Get the currently active window title.")
+def get_active_window() -> dict:
+    if not gw:
+        return {"success": False, "error": "pygetwindow not installed"}
+    try:
+        active = gw.getActiveWindow()
+        title = active.title if active else None
+        return {"success": True, "title": title}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

@@ -29,6 +29,6 @@ class ExecutionPlan(BaseModel):
 
 class AgentEvent(BaseModel):
     event_type: str
-    task_id:str
+    task_id: Optional[str] = None
     payload: Dict[str, Any]
     timestamp: float = Field(default_factory=lambda: __import__('time').time())

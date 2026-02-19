@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 class WebSearchAgent(BaseAgent):
     """Agent specialized in web search, information retrieval, and universal browser automation"""
     
-    def __init__(self):
+    def __init__(self,auth_token:str,server_url:str):
         super().__init__(
             agent_id="web_search_agent_001",
             name="Web Search Agent",
@@ -28,8 +28,13 @@ class WebSearchAgent(BaseAgent):
         self.browser = Browser()
         
         # Initialize LLM for natural language element selection
-        self.llm = ChatOpenAI(model="qwen3:latest",api_key=os.environ.get("OPENAI_API_KEY"),
-                              base_url=f"{str(os.environ.get("OPENAI_API_BASE_URL").rstrip('/'))}/api/v1")
+        base = server_url
+        base = base.rstrip("/")
+        self.llm = ChatOpenAI(
+            model="qwen3:latest",
+            api_key=auth_token,
+            base_url=f"{base}/api/v1" if base else None
+        )
         
         # Initialize credential store and browser tools
         self.credential_store = SecureCredentialStore()
@@ -62,9 +67,10 @@ class WebSearchAgent(BaseAgent):
         
         return task_type in supported_types
 
-    async def process_task(self, query: str) -> AgentResponse:
+    async def process_task(self, task: Task) -> AgentResponse:
         """Process task using browser-use Agent with universal automation tools"""
         try:
+            query = task.metadata.get("query", "") if isinstance(task, Task) else str(task)
             if not query:
                 return AgentResponse(
                     agent_id=self.agent_id,
@@ -89,7 +95,7 @@ CRITICAL RULES:
 6. Use natural language tools to interact with page elements
 7. Stop once the task is complete - do not continue with additional actions
 8. Report success when the requested task is finished
-
+9. Open a new tab and search "https://search.brave.com/" .
 TASK COMPLETION:
 - Login task: Complete when successfully authenticated
 - Navigation task: Complete when on the correct page
@@ -98,15 +104,22 @@ TASK COMPLETION:
             
             # Create browser agent with tools
             browser_agent = Agent(
-                task=query,
+                task=str(query),
                 llm=llm,
                 browser=self.browser,
                 tools=tools,
                 extend_system_message=system_message,
+                max_failures=2,
+                max_actions_per_step=4,
+                max_history_items=7,
+                source="https://search.brave.com/",
+                sensitive_data=self.credential_store.get_credential(),
+                
+                
             )
 
             self.logger.info(f"Processing task: {query}")
-            
+            browser_agent.browser_session.navigate_to("https://www.brave.com",new_tab=False)
             # Run the agent
             history = await browser_agent.run()
             

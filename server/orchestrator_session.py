@@ -14,11 +14,13 @@ import json
 from typing import Dict, Any, Optional, Callable, Set
 from datetime import datetime
 from server.agents.orchestrator import CentralOrchestrator
+from server.agents.base_agent import BaseAgent
 from server.services.context.context_store import ContextStore
-
 from server.agents.vision_agent import VisionAgent
 from server.agents.system_context_agent import SystemContextAgent
 from server.agents.knowledge_agent import KnowledgeAgent
+from server.agents.email_agent import EmailAgent
+from server.agents.document_agent import DocumentAgent
 from server.services.vision.screenshot_capture import capture_screenshot_bytes
 
 
@@ -58,10 +60,15 @@ class OrchestratorSession:
         self._last_auth_token: Optional[str] = None
         self._last_base_url: Optional[str] = None
         self._screenshot_task: Optional[asyncio.Task] = None
+        self._agent_state: str = "idle"
+        self._active_agent: Optional[str] = None
+        self._tool_name: Optional[str] = None
         
         # Set up event callback to translate orchestrator events
         self.orchestrator.set_event_callback(self._handle_orchestrator_event)
+        BaseAgent.set_default_event_callback(self._handle_orchestrator_event)
         self._register_module_agents()
+        self._sync_agent_callbacks()
         self._start_screenshot_loop()
 
         
@@ -112,21 +119,28 @@ class OrchestratorSession:
             
             elif event_type == "orchestrator_state_update":
                 await self._send_state_update(task_id, payload)
+                await self._map_orchestrator_state(task_id, payload)
             
             elif event_type == "assistant_text_chunk":
                 await self._send_text_chunk(task_id, payload)
+                await self._send_agent_state(task_id, "speaking")
             
             elif event_type == "assistant_text_final":
                 await self._send_assistant_response(task_id, payload)
+                await self._send_agent_state(task_id, "speaking")
             
             elif event_type == "orchestrator_error":
                 await self._send_error(task_id, payload)
+                await self._send_error_event(task_id, "orchestrator", payload.get("message"))
+                await self._send_agent_state(task_id, "error")
 
             elif event_type == "system_agent_state_update":
                 await self._send_system_agent_state(task_id, payload)
+                await self._send_active_agent(task_id, "System Control Agent")
 
             elif event_type == "system_agent_event":
                 await self._send_system_agent_event(task_id, payload)
+                await self._send_agent_activity(task_id, payload)
 
             elif event_type == "reminder_triggered":
                 await self._send_reminder_triggered(task_id, payload)
@@ -145,6 +159,35 @@ class OrchestratorSession:
 
             elif event_type == "autonomous_permission_required":
                 await self._send_autonomous_permission_required(task_id, payload)
+                await self._send_agent_state(task_id, "waiting_for_permission")
+
+            elif event_type == "agent_state":
+                await self._send_agent_state(task_id, payload.get("state", "idle"), payload.get("agent"))
+
+            elif event_type == "active_agent":
+                await self._send_active_agent(task_id, payload.get("agent"))
+
+            elif event_type == "tool_called":
+                await self._send_tool_name(task_id, payload.get("tool"), payload.get("agent"))
+                await self._send_agent_state(task_id, "calling_tool", payload.get("agent"))
+
+            elif event_type == "tool_result":
+                await self._send_agent_state(task_id, "executing", payload.get("agent"))
+
+            elif event_type == "agent_activity":
+                await self._send_agent_activity(task_id, payload)
+
+            elif event_type == "error_event":
+                await self._send_error_event(task_id, payload.get("source", "agent"), payload.get("message"), payload)
+                await self._send_agent_state(task_id, "error", payload.get("agent"))
+
+            elif event_type == "tts_started":
+                await self._send_tts_event(task_id, True, payload)
+                await self._send_agent_state(task_id, "speaking")
+
+            elif event_type == "tts_finished":
+                await self._send_tts_event(task_id, False, payload)
+                await self._send_agent_state(task_id, "idle")
             
             else:
                 # Unknown event type - log but don't fail
@@ -166,6 +209,7 @@ class OrchestratorSession:
             "timestamp": datetime.now().isoformat()
         }
         await self._enqueue_send(message)
+        await self._send_agent_state(task_id, "listening")
     
     async def _send_permission_required(self, task_id: str, payload: Dict[str, Any]):
         """Send system_permission_required message to frontend."""
@@ -180,6 +224,7 @@ class OrchestratorSession:
             "timestamp": datetime.now().isoformat()
         }
         await self._enqueue_send(message)
+        await self._send_agent_state(task_id, "waiting_for_permission")
     
     async def _send_state_update(self, task_id: str, payload: Dict[str, Any]):
         """Send orchestrator_state_update message to frontend."""
@@ -259,6 +304,103 @@ class OrchestratorSession:
         }
         await self._enqueue_send(message)
 
+    async def _send_agent_state(self, task_id: str, state: str, agent: Optional[str] = None):
+        if not state:
+            return
+        if state == self._agent_state and (agent is None or agent == self._active_agent):
+            return
+        self._agent_state = state
+        if agent:
+            self._active_agent = agent
+        message = {
+            "type": "agent_state",
+            "task_id": task_id,
+            "payload": {
+                "state": state,
+                "agent": agent or self._active_agent
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_active_agent(self, task_id: str, agent: Optional[str]):
+        if not agent:
+            return
+        if agent == self._active_agent:
+            return
+        self._active_agent = agent
+        message = {
+            "type": "active_agent",
+            "task_id": task_id,
+            "payload": {"agent": agent},
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_tool_name(self, task_id: str, tool_name: Optional[str], agent: Optional[str] = None):
+        if not tool_name:
+            return
+        self._tool_name = tool_name
+        if agent:
+            self._active_agent = agent
+        message = {
+            "type": "tool_name",
+            "task_id": task_id,
+            "payload": {
+                "tool_name": tool_name,
+                "agent": agent or self._active_agent
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_agent_activity(self, task_id: str, payload: Dict[str, Any]):
+        message = {
+            "type": "agent_activity",
+            "task_id": task_id,
+            "payload": payload,
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_error_event(self, task_id: str, source: str, message_text: Optional[str], payload: Optional[Dict[str, Any]] = None):
+        message = {
+            "type": "error_events",
+            "task_id": task_id,
+            "payload": {
+                "source": source,
+                "message": message_text or "error",
+                "details": payload or {},
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _send_tts_event(self, task_id: Optional[str], started: bool, payload: Optional[Dict[str, Any]] = None):
+        message = {
+            "type": "tts_started" if started else "tts_finished",
+            "task_id": task_id,
+            "payload": payload or {},
+            "timestamp": datetime.now().isoformat()
+        }
+        await self._enqueue_send(message)
+
+    async def _map_orchestrator_state(self, task_id: str, payload: Dict[str, Any]):
+        state = payload.get("state", "idle")
+        mapping = {
+            "idle": "idle",
+            "listening": "listening",
+            "thinking": "thinking",
+            "running": "executing",
+            "paused": "waiting_for_permission",
+            "streaming": "speaking",
+            "failed": "error",
+            "cancelled": "idle",
+            "completed": "idle",
+            "interrupted": "idle"
+        }
+        await self._send_agent_state(task_id, mapping.get(state, "idle"))
+
     async def _send_reminder_triggered(self, task_id: str, payload: Dict[str, Any]):
         """Send reminder_triggered message to frontend."""
         message = {
@@ -323,9 +465,17 @@ class OrchestratorSession:
 
     def _register_module_agents(self):
         """Register additional agents without modifying the CentralOrchestrator."""
-        for agent in [VisionAgent(), SystemContextAgent(), KnowledgeAgent()]:
+        for agent in [VisionAgent(), KnowledgeAgent(), EmailAgent(), DocumentAgent()]:
             if not any(a.name == agent.name for a in self.orchestrator.agents):
                 self.orchestrator.agents.append(agent)
+
+    def _sync_agent_callbacks(self):
+        for agent in list(self.orchestrator.agents):
+            try:
+                if hasattr(agent, "set_event_callback"):
+                    agent.set_event_callback(self._handle_orchestrator_event)
+            except Exception:
+                continue
 
     def _start_screenshot_loop(self):
         """Always-on backend screenshot capture for vision."""

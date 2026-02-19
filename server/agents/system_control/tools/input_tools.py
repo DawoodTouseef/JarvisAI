@@ -88,3 +88,37 @@ def press_key(key: str) -> dict:
         return {"success": True, "message": f"Pressed key '{key}'"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@register_tool("scroll", description="Scroll the mouse wheel by a number of clicks (positive=up, negative=down).")
+def scroll(clicks: int = 5) -> dict:
+    if not pyautogui and not pynput:
+        return {"success": False, "error": "pyautogui or pynput not installed"}
+    try:
+        if pyautogui:
+            pyautogui.scroll(clicks)
+        else:
+            mouse_controller, _, _ = _get_pynput_controllers()
+            mouse_controller.scroll(0, clicks)
+        return {"success": True, "message": f"Scrolled {clicks} clicks"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@register_tool("drag_mouse", description="Drag the mouse from (start_x, start_y) to (end_x, end_y).")
+def drag_mouse(start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.2) -> dict:
+    if not pyautogui and not pynput:
+        return {"success": False, "error": "pyautogui or pynput not installed"}
+    try:
+        if pyautogui:
+            pyautogui.moveTo(start_x, start_y)
+            pyautogui.dragTo(end_x, end_y, duration=duration)
+        else:
+            mouse_controller, _, _ = _get_pynput_controllers()
+            from pynput.mouse import Button
+            mouse_controller.position = (start_x, start_y)
+            mouse_controller.press(Button.left)
+            time.sleep(max(0.01, duration))
+            mouse_controller.position = (end_x, end_y)
+            mouse_controller.release(Button.left)
+        return {"success": True, "message": f"Dragged mouse to ({end_x}, {end_y})"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

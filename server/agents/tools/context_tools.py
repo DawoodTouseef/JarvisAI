@@ -16,7 +16,7 @@ class SystemContextSchema(BaseModel):
 class SystemContextTool(BaseTool):
     name: str = "system_context"
     description: str = "Get system state snapshot (CPU, memory, uptime, platform)."
-    args_schema = SystemContextSchema
+    args_schema: type[BaseModel] = SystemContextSchema
 
     async def run(self, detail: str = "basic"):
         snapshot = get_snapshot()
@@ -36,7 +36,7 @@ class SessionContextSchema(BaseModel):
 class SessionContextTool(BaseTool):
     name: str = "session_context"
     description: str = "Get latest session context metadata (image, timestamps)."
-    args_schema = SessionContextSchema
+    args_schema: type[BaseModel] = SessionContextSchema
 
     async def run(self, session_id: str):
         payload = ContextStore.get_latest_payload(session_id)

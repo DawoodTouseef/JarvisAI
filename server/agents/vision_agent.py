@@ -28,9 +28,17 @@ class VisionAgent(BaseAgent):
 
     async def process_task(self, task: Task) -> AgentResponse:
         task_id = task.metadata.get("parent_task_id") or task.id
+        await self.emit_event("active_agent", task_id, {"agent": self.name})
+        await self.emit_event("agent_state", task_id, {"state": "executing", "agent": self.name})
+        await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": "Analyzing screen"})
         session_id = ContextStore.get_session_for_task(task_id)
         screenshot_image = ContextStore.get_screenshot_image(session_id) if session_id else None
         if not screenshot_image:
+            await self.emit_event("error_event", task_id, {
+                "source": "vision",
+                "agent": self.name,
+                "message": "No screenshot context available for this session."
+            })
             return AgentResponse(
                 agent_id=self.agent_id,
                 success=False,
@@ -57,7 +65,13 @@ class VisionAgent(BaseAgent):
                 camera_enabled=vision_config.camera_enabled,
             )
             result["metadata"] = vision_input.metadata
+            await self.emit_event("agent_activity", task_id, {"agent": self.name, "message": "Vision analysis complete"})
             return AgentResponse(agent_id=self.agent_id, success=True, result=result)
         except Exception as exc:
             self.logger.exception("VisionAgent: vision processing failed")
+            await self.emit_event("error_event", task_id, {
+                "source": "vision",
+                "agent": self.name,
+                "message": str(exc)
+            })
             return AgentResponse(agent_id=self.agent_id, success=False, error=str(exc))

@@ -8,6 +8,9 @@ import { AgentCommunication, WakeWordCommunication } from '@/lib/client_websocke
 import { brain, AssistantState, useBrainState } from '@/brain';
 import { useSpeakingStore } from "@/stores/speaking";
 import { ttsEngine } from "@/lib/tts/TtsManager";
+import { useAgentSystemStore } from "@/stores/agentSystem";
+import { useVisionStore } from "@/stores/vision";
+import { AgentActivityFeed } from "@/components/AgentActivityFeed";
 
 type VoiceState = "IDLE" | "LISTENING" | "PROCESSING" | "SPEAKING" | "RESET";
 
@@ -85,6 +88,11 @@ export const AudioSpectrum = () => {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const setIsUserSpeaking = useSpeakingStore((s) => s.setText);
   const isListening = voiceState === "LISTENING";
+  const agentState = useAgentSystemStore((s) => s.state);
+  const activeAgent = useAgentSystemStore((s) => s.activeAgent);
+  const toolName = useAgentSystemStore((s) => s.toolName);
+  const visionScreenActive = useVisionStore((s) => s.screenActive);
+  const cameraEnabled = useVisionStore((s) => s.cameraEnabled);
 
   // New state for dialogs
   const [clarificationReq, setClarificationReq] = useState<{ task_id: string, question: string } | null>(null);
@@ -129,8 +137,8 @@ export const AudioSpectrum = () => {
 
     // Get State
     const brainState = brain.getState();
-    const isThinking = brainState === AssistantState.THINKING;
-    const isSpeakingState = voiceState === "SPEAKING";
+    const isThinking = brainState === AssistantState.THINKING || agentState === "thinking";
+    const isSpeakingState = voiceState === "SPEAKING" || agentState === "speaking";
     const isListeningState = voiceState === "LISTENING";
 
     if (analyser && (isListeningState || isSpeakingState)) {
@@ -163,6 +171,8 @@ export const AudioSpectrum = () => {
 
     // Colors based on state
     let baseHue = 185; // Cyan (Default)
+    if (agentState === "calling_tool") baseHue = 45; // Amber
+    if (agentState === "executing") baseHue = 200; // Blue-cyan
     if (isThinking) baseHue = 280; // Purple
     if (isSpeakingState) baseHue = 140; // Green
     if (wakeStatus === 'WAKE WORD DETECTED') baseHue = 30; // Orange
@@ -229,7 +239,7 @@ export const AudioSpectrum = () => {
     ctx.fill();
 
     animationRef.current = requestAnimationFrame(drawSpectrum);
-  }, [analyser, voiceState, wakeStatus]);
+  }, [analyser, voiceState, wakeStatus, agentState]);
 
   useEffect(() => {
     animationRef.current = requestAnimationFrame(drawSpectrum);
@@ -533,13 +543,25 @@ export const AudioSpectrum = () => {
         wakeWordEnabledRef.current = false;
         vadEnabledRef.current = true;
         stopListening({ skipTranscription: true, nextState: "SPEAKING" });
+        AgentCommunication.sendJSON({
+          type: "tts_event",
+          payload: { status: "started" }
+        });
       },
       onEnd: () => {
         if (bargeInRef.current) return;
+        AgentCommunication.sendJSON({
+          type: "tts_event",
+          payload: { status: "finished" }
+        });
         void resetAudioPipeline("IDLE");
       },
       onError: (err: unknown) => {
         console.error("[TTS] Error:", err);
+        AgentCommunication.sendJSON({
+          type: "tts_event",
+          payload: { status: "finished", error: true }
+        });
         void resetAudioPipeline("IDLE");
       }
     };
@@ -675,7 +697,21 @@ export const AudioSpectrum = () => {
         transition={{ delay: 0.5 }}
       >
         <ListeningAnimation isTranscribing={isTranscribing} voiceState={voiceState} />
+        <div className="mt-2 text-xs text-muted-foreground font-orbitron tracking-wider">
+          STATE: {agentState.toUpperCase()}
+        </div>
+        {(activeAgent || toolName) && (
+          <div className="mt-1 text-[11px] text-primary/80 font-rajdhani tracking-wide">
+            {activeAgent ? `${activeAgent}` : "AGENT"}{toolName ? ` → ${toolName}` : ""}
+          </div>
+        )}
+        <div className="mt-2 flex items-center justify-center gap-3 text-[10px] text-muted-foreground font-orbitron tracking-wider">
+          <span>SCREEN VISION: {visionScreenActive ? "ACTIVE" : "OFF"}</span>
+          <span>CAMERA VISION: {cameraEnabled ? "ENABLED" : "DISABLED"}</span>
+        </div>
       </motion.div>
+
+      <AgentActivityFeed />
 
       {/* Clarification Dialog */}
       {clarificationReq && (

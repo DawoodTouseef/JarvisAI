@@ -648,6 +648,11 @@ async def voice_assistant_websocket(websocket: WebSocket):
                         "payload": {"stored": stored},
                         "timestamp": datetime.now().isoformat()
                     })
+                
+                elif message_type == "tts_event":
+                    status = payload.get("status")
+                    event_type = "tts_started" if status == "started" else "tts_finished"
+                    await session.handle_external_event(event_type, session.active_task_id or "", payload)
 
                 elif message_type == "autonomous_permission_response":
                     # Handle autonomous permission response

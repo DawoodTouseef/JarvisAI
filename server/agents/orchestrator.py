@@ -37,7 +37,7 @@ from .general_purpose_agent import GeneralPurposeAgent
 from .base_agent import BaseAgent, Task
 from .tools.agent_clarification import agent_clarification_tool
 from .local_execution_agent import LocalExecutionChatbotAgent
-
+from .web_search_agent import WebSearchAgent
 
 from .system_agent_wrapper import SystemAgentWrapper
 
@@ -66,7 +66,7 @@ class CentralOrchestrator:
         self.event_callback: Optional[Any] = None
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.cancelled_tasks: Set[str] = set()
-        self.running_agents: Dict[str, BaseAgent] = {}
+        self.running_agents: Dict[str, List[BaseAgent]] = {}
         
         self._register_default_agents()
         self._setup_workflow()
@@ -133,7 +133,7 @@ class CentralOrchestrator:
             self.agents.append(local_agent)
         except Exception as exc:
             logger.exception("Failed to register Local Execution Chatbot Agent: %s", exc)
-
+        self.agents.append(WebSearchAgent(auth_token=task_data.get("auth_token"),server_url=task_data.get("base_url")))
         state: AgentWorkflowState = {
             "original_input": task_data["query"],
             "decomposed_tasks": [],
@@ -188,8 +188,8 @@ class CentralOrchestrator:
 
     async def handle_interrupt(self, task_id: str):
         """Handle user interruption"""
-        agent = self.running_agents.get(task_id)
-        if agent:
+        agents = self.running_agents.get(task_id) or []
+        for agent in list(agents):
             interrupt = getattr(agent, "interrupt_task", None)
             if interrupt and asyncio.iscoroutinefunction(interrupt):
                 await interrupt(task_id)
@@ -212,10 +212,11 @@ Return JSON only.
 
 Available agents: 
 {agents}
-
+Example:
+{example}
 Format:
 [
-  {{"task_description": "...", "agent": "...","task_id": "...","dep": dependency_task_id}}
+  {{"task_description": "...", "agent": "...","task_id": "...","dep": dependency_task_id,"task_input":"..."}}
 ]
 
 Search Request: {query}
@@ -229,15 +230,22 @@ Current Role: {role_info}
             )
             chain = prompt | llm 
             agents_str = "\n".join([f"- {agent.name}: {agent.description}" for agent in self.agents])
-            
+            example ={}
             # Format role info
             role_dict = state.get("role_context")
             role_info = f"Role: {role_dict['role_name']}, Goals: {role_dict['behavioral_goals']}" if role_dict else "Standard Assistant"
 
-            response = await chain.ainvoke({"query": state["original_input"], "agents": agents_str, "role_info": role_info})
+            response = await chain.ainvoke({"query": state["original_input"], "agents": agents_str, "role_info": role_info,"example":example})
             text = response.content if hasattr(response, 'content') else str(response)
             match = re.search(r"\[.*\]", text, re.DOTALL)
             state["decomposed_tasks"] = json.loads(match.group(0)) if match else []
+            if not state["decomposed_tasks"]:
+                state["decomposed_tasks"] = [{
+                    "task_description": state["original_input"],
+                    "agent": "General-Purpose Agent",
+                    "task_id": f"{state['task_id']}_fallback",
+                    "dep": None,
+                }]
             state["execution_log"].append("Decomposition completed")
         except Exception as e:
             state['workflow_status'] = "failed"
@@ -247,22 +255,28 @@ Current Role: {role_info}
         return state
 
     async def _execute_tasks_node(self, state: AgentWorkflowState) -> AgentWorkflowState:
+        """
+        Docstring for _execute_tasks_node
+        
+        :param self: Description
+        :param state: Description
+        :type state: AgentWorkflowState
+        :return: Description
+        :rtype: AgentWorkflowState
+        """
         if state["workflow_status"] == "failed":
             return state
 
-        results = []
+        results_by_id: Dict[str, Dict[str, Any]] = {}
+        pending = list(state["decomposed_tasks"])
+        completed: Set[str] = set()
 
-        for item in state["decomposed_tasks"]:
+        async def _run_item(item: Dict[str, Any]) -> Dict[str, Any]:
             agent = next((agent for agent in self.agents if agent.name == item.get("agent")), None)
-            if not agent:
-                state["workflow_status"] = "failed"
-                error_msg = f"Unknown agent requested: {item.get('agent')}"
-                state["errors"].append(error_msg)
-                state["execution_log"].append(error_msg)
-                break
+            task_text = item.get("task_description") or item.get("task_input") or ""
             task = Task(
                 metadata={
-                    "query": item["task_description"],
+                    "query": task_text,
                     "parent_task_id": item.get("dep") or item.get("task_id"),
                     "auth_token": state.get("auth_token"),
                     "base_url": state.get("base_url"),
@@ -271,25 +285,77 @@ Current Role: {role_info}
                 }
             )
 
-            self.running_agents[state["task_id"]] = agent
+            running = self.running_agents.setdefault(state["task_id"], [])
+            running.append(agent)
             await self._update_state(state["task_id"], OrchestratorState.RUNNING)
-            response = await agent.process_task(task)
-            results.append({
-                    "task": item["task_description"],
+            try:
+                response = await agent.process_task(task)
+                return {
+                    "task": task_text,
                     "agent": agent.name,
                     "success": response.success,
                     "result": response.result,
                     "error": response.error,
-            })
-            if state["task_id"] in self.running_agents:
-                del self.running_agents[state["task_id"]]
-            
+                }
+            finally:
+                if state["task_id"] in self.running_agents:
+                    try:
+                        self.running_agents[state["task_id"]].remove(agent)
+                    except ValueError:
+                        pass
 
-        state["task_results"] = results
+        while pending:
+            if state["task_id"] in self.cancelled_tasks:
+                state["workflow_status"] = "cancelled"
+                break
+            ready = []
+            for item in pending:
+                dep = item.get("dep")
+                if not dep or dep in completed:
+                    ready.append(item)
+            if not ready:
+                state["workflow_status"] = "failed"
+                error_msg = "Dependency resolution failed"
+                state["errors"].append(error_msg)
+                state["execution_log"].append(error_msg)
+                break
+
+            responses = await asyncio.gather(*[_run_item(item) for item in ready], return_exceptions=True)
+            for item, resp in zip(ready, responses):
+                task_key = item.get("task_id") or item.get("task_description") or item.get("task_input")
+                if isinstance(resp, Exception):
+                    results_by_id[task_key] = {
+                        "task": item.get("task_description") or item.get("task_input"),
+                        "agent": item.get("agent"),
+                        "success": False,
+                        "result": None,
+                        "error": str(resp),
+                    }
+                else:
+                    results_by_id[task_key] = resp
+                completed.add(task_key)
+            pending = [p for p in pending if p not in ready]
+
+        ordered_results = []
+        for item in state["decomposed_tasks"]:
+            key = item.get("task_id") or item.get("task_description") or item.get("task_input")
+            if key in results_by_id:
+                ordered_results.append(results_by_id[key])
+
+        state["task_results"] = ordered_results
         state["execution_log"].append("Execution completed")
         return state
 
     async def _synthesize_node(self, state: AgentWorkflowState) -> AgentWorkflowState:
+        """
+        Docstring for _synthesize_node
+        
+        :param self: Description
+        :param state: Description
+        :type state: AgentWorkflowState
+        :return: Description
+        :rtype: AgentWorkflowState
+        """
         if state["workflow_status"] == "failed":
             return state
         if state["task_id"] in self.cancelled_tasks:
@@ -337,6 +403,15 @@ Current Role: {role_info}
         return state
 
     async def _finalize_node(self, state: AgentWorkflowState) -> AgentWorkflowState:
+        """
+        Docstring for _finalize_node
+        
+        :param self: Description
+        :param state: Description
+        :type state: AgentWorkflowState
+        :return: Description
+        :rtype: AgentWorkflowState
+        """
         if state["workflow_status"] == "processed":
             state["workflow_status"] = "completed"
             state["execution_log"].append("Workflow completed successfully")
@@ -347,7 +422,6 @@ Current Role: {role_info}
             await self._update_state(state["task_id"], OrchestratorState.FAILED)
 
         return state
-
 
     async def request_clarification(self, task_id: str, question: str) -> str:
         """Request clarification from the user and pause until response"""

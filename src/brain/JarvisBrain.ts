@@ -2,6 +2,7 @@ import { StateManager, useBrainState } from "./StateManager";
 import { TurnManager } from "./TurnManager";
 import { AssistantState, BrainConfig, BrainStateData } from "./types";
 import { ttsEngine } from "../lib/tts/TtsManager";
+import { useAgentSystemStore } from "@/stores/agentSystem";
 
 const DEFAULT_CONFIG: BrainConfig = {
     bargeInEnabled: true,
@@ -73,6 +74,62 @@ export class JarvisBrain {
                 }
 
                 switch (type) {
+                    case "agent_state": {
+                        const { setState } = useAgentSystemStore.getState();
+                        if (payload?.state) {
+                            setState(payload.state, payload.agent);
+                        }
+                        break;
+                    }
+                    case "active_agent": {
+                        const { setActiveAgent } = useAgentSystemStore.getState();
+                        setActiveAgent(payload?.agent);
+                        break;
+                    }
+                    case "tool_name": {
+                        const { setToolName, addActivity } = useAgentSystemStore.getState();
+                        setToolName(payload?.tool_name);
+                        if (payload?.tool_name || payload?.agent) {
+                            addActivity({
+                                agent: payload?.agent,
+                                message: `Calling tool ${payload?.tool_name || ""}`.trim(),
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+                        break;
+                    }
+                    case "agent_activity": {
+                        const { addActivity } = useAgentSystemStore.getState();
+                        addActivity({
+                            agent: payload?.agent,
+                            message: payload?.message || payload?.text || "Activity",
+                            tool: payload?.tool,
+                            timestamp: new Date().toISOString()
+                        });
+                        break;
+                    }
+                    case "error_events": {
+                        const { setError, addActivity } = useAgentSystemStore.getState();
+                        const message = payload?.message || "Error";
+                        setError(message);
+                        addActivity({
+                            agent: payload?.agent,
+                            message,
+                            timestamp: new Date().toISOString(),
+                            level: "error"
+                        });
+                        break;
+                    }
+                    case "tts_started": {
+                        const { setState } = useAgentSystemStore.getState();
+                        setState("speaking");
+                        break;
+                    }
+                    case "tts_finished": {
+                        const { setState } = useAgentSystemStore.getState();
+                        setState("idle");
+                        break;
+                    }
                     case "orchestrator_state_update":
                         this.handleOrchestratorStateUpdate(payload.state);
                         break;

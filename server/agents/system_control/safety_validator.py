@@ -10,15 +10,31 @@ class SafetyValidator:
         "get_active_window",
         "read_file",
         "get_system_info",
+        "get_system_time",
+        "get_system_date",
+        "get_os_info",
         "get_volume",
         "get_brightness",
         "open_application",
         "close_application",
+        "open_file",
+        "open_folder",
+        "focus_window",
+        "move_mouse",
+        "click",
+        "scroll",
+        "drag_mouse",
+        "press_key",
+        "type_text",
     }
 
     # Actions that require explicit confirmation
     CONFIRM_ACTIONS = {
-        "run_shell"
+        "run_shell",
+        "write_file",
+        "delete_file",
+        "adjust_volume",
+        "adjust_brightness",
     }
 
     # Forbidden actions
@@ -77,6 +93,8 @@ class SafetyValidator:
         if tool in {"type_text", "click", "move_mouse", "press_key"}:
             return "medium"
         if tool in {"read_file", "get_system_info", "get_volume", "get_brightness", "get_window_list", "get_active_window"}:
+            return "low"
+        if tool in {"get_system_time", "get_system_date", "get_os_info"}:
             return "low"
 
         return "unknown"
